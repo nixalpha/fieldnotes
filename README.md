@@ -27,7 +27,7 @@ stop it yourself or use `--external-mediamtx` with an appropriately configured r
 The application works without an API key for video preview and MCP frame retrieval. With a key,
 startup makes one small paid capability-check request using a synthetic gray image. Summaries begin
 only after **Start observing**, or automatically with `--autostart`. Sampled images are sent to OpenAI
-while observation is enabled. The default model is `gpt-4o-mini`; override `OPENAI_MODEL` in `.env`.
+while observation is enabled. The default model is `gpt-6-luna`; override `OPENAI_MODEL` in `.env`.
 
 ### DJI Mini 5 Pro + RC-N3
 
@@ -169,3 +169,12 @@ has no dependency on WorldGit.
 
 Real-flight acceptance and real-model semantic quality must be tested with your hardware and API key;
 the automated replay test cannot establish either.
+
+
+## Temporal visual memory
+
+SQLite temporal interpretations, MobileCLIP2-S0 visual retrieval, and selective EdgeTAM tracking are available through the portal and MCP. See [setup, replay, MCP contracts, storage and manual checks](docs/visual-memory.md).
+
+Quick setup: `uv sync --extra perception`, then `uv run --extra perception fieldnotes setup-memory-models`.
+
+Run the isolated 55-image exercise using `replay-memory`, `view-memory`, and `exercise-memory-mcp` as documented. Generative interpretations are clearly labeled mocks; embeddings and masks use the actual local models.

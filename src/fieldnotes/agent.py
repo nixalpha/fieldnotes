@@ -57,6 +57,7 @@ class Agent:
         self.clock: WindowClock | None = None
         self.busy = False
         self.error: str | None = None
+        self.memory_error: str | None = None
         self.last_duration_ms = 0
         self.tasks: list[asyncio.Task] = []
         self.autostart = False
@@ -65,7 +66,7 @@ class Agent:
 
     def status(self):
         return {"enabled": self.enabled, "available": self.model.available,
-                "model": self.model.name, "model_error": self.model.error, "error": self.error,
+                "memory_error": self.memory_error, "model": self.model.name, "model_error": self.model.error, "error": self.error,
                 "busy": self.busy, "pending": self.pending is not None,
                 "interval_seconds": self.interval_seconds, "brief": self.brief,
                 "last_duration_ms": self.last_duration_ms,
@@ -142,15 +143,44 @@ class Agent:
                                 "start_elapsed_ms": observation["start_elapsed_ms"],
                                 "end_elapsed_ms": observation["end_elapsed_ms"]})
                             recent, _ = await call(session, "get_recent_summaries", {"limit": 3})
+                            priors = list(recent["summaries"])
+                            try:
+                                memory, _ = await call(session, "get_memory_state", {
+                                    "session_id": metadata["session_id"],
+                                    "at_elapsed_ms": metadata["start_elapsed_ms"]})
+                                priors.append({"kind": "fallible_historical_memory",
+                                    "notice": "Historical labels and interpretations only; cite current images for current claims.",
+                                    "states": [{"latest_interpretation": s["latest_interpretation"],
+                                                "support_conflict": s.get("support_conflict", False)}
+                                               for s in memory.get("states", [])[:10]]})
+                            except Exception:
+                                pass  # Optional memory context must not stop ordinary summaries.
                             async with asyncio.timeout(self.model_timeout):
                                 visual, usage = await self.model.summarize(metadata, images,
-                                                                           recent["summaries"], self.brief)
+                                                                           priors, self.brief)
                             self.last_duration_ms = round((time.monotonic() - started) * 1000)
                             await call(session, "record_summary", {
                                 "observation_id": observation["observation_id"],
                                 "summary": visual.model_dump(), "generation": {
                                     "model": self.model.name, "duration_ms": self.last_duration_ms, **usage}})
                             self.error = None
+                            # Summary persistence and memory persistence have independent outcomes.
+                            if self.model.last_memory:
+                                try:
+                                    assertions=[]
+                                    for draft in self.model.last_memory:
+                                        draft=dict(draft)
+                                        ids=draft.pop("frame_ids")
+                                        draft["evidence_ids"]=[f"{metadata['session_id']}:{fid}" for fid in ids]
+                                        assertions.append(draft)
+                                    await call(session, "record_memory", {"proposal": {
+                                        "session_id": metadata["session_id"],
+                                        "idempotency_key": "summary-memory:" + metadata["observation_id"],
+                                        "evidence_bundle_ids": [metadata["evidence_bundle_id"]],
+                                        "assertions": assertions}})
+                                    self.memory_error=None
+                                except Exception as exc:
+                                    self.memory_error=f"Memory was not saved: {exc}"
                         except asyncio.CancelledError:
                             self.runtime.record_system(observation, "skipped", "Application stopped during analysis.")
                             raise

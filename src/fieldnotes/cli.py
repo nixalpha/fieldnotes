@@ -25,6 +25,7 @@ def load_env():
 
 def port_free(port: int, host: str = "127.0.0.1") -> bool:
     with socket.socket() as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, port))
             return True
@@ -40,7 +41,7 @@ def doctor():
         "ffmpeg": shutil.which("ffmpeg"), "mediamtx": shutil.which("mediamtx"),
         "port_1935_free": port_free(1935, "0.0.0.0"), "port_8000_free": port_free(8000),
         "api_key_configured": bool(os.getenv("OPENAI_API_KEY")),
-        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "model": os.getenv("OPENAI_MODEL", "gpt-6-luna"),
         "dependencies": {p: importlib.metadata.version(p) for p in ("mcp", "fastapi", "openai", "pillow")},
         "publish_url": f"rtmp://{lan_ip()}:1935/live/drone",
     }
@@ -159,3 +160,47 @@ def replay(video: Path = typer.Argument(..., exists=True, dir_okay=False),
             raise typer.Exit(code)
     finally:
         terminate(proc)
+
+
+@app.command()
+def setup_memory_models(model_dir: Path = Path("data/models")):
+    """Explicitly download pinned public weights and EdgeTAM source; no image upload."""
+    from .perception import setup
+    typer.echo(json.dumps(setup(model_dir), indent=2))
+
+
+@app.command()
+def replay_memory(evidence: Path = typer.Argument(..., exists=True, file_okay=False),
+                  source_journal: Path = typer.Option(Path("data/journal.sqlite3"), exists=True),
+                  output_root: Path = Path("data/memory-runs"), model_dir: Path = Path("data/models"),
+                  fixture_file: Path | None = None):
+    """Copy sampled evidence and index every retained image in an isolated mock run."""
+    from .memory_replay import replay
+    typer.echo(replay(evidence, source_journal, output_root, model_dir, fixture_file))
+
+
+@app.command()
+def view_memory(archive: Path = typer.Argument(..., exists=True, file_okay=False),
+                port: int = typer.Option(8001, min=1024, max=65535), model_dir: Path | None = None):
+    """Serve an isolated mock archive and actual MCP; never starts ingestion or paid calls."""
+    manifest=json.loads((archive / "manifest.json").read_text())
+    if manifest.get("input_kind") != "sampled_evidence":
+        raise typer.BadParameter("Not a sampled-evidence memory archive")
+    if not port_free(port):
+        if port == 8001 and port_free(8002): port=8002
+        else: raise typer.BadParameter("Port occupied; choose --port. No process was stopped.")
+    root=model_dir or Path(manifest["model_root"])
+    application=create_app(archive.resolve(), port=port, source="replay", stub=True, ingest=False,
+                           archive=True, model_root=root)
+    typer.echo(f"MOCK ARCHIVE dashboard: http://127.0.0.1:{port}/\nMCP: http://127.0.0.1:{port}/mcp")
+    uvicorn.run(application, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=3)
+
+
+@app.command()
+def exercise_memory_mcp(archive: Path = typer.Argument(..., exists=True, file_okay=False),
+                        port: int = typer.Option(8002, min=1024, max=65535),
+                        start_tracks: bool = True):
+    """Run only the scoped offline MCP scenarios, with authored mock LLM responses."""
+    import asyncio
+    from .memory_exercise import exercise
+    asyncio.run(exercise(archive, f"http://127.0.0.1:{port}/mcp", start_tracks))

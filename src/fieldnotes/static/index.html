@@ -11,6 +11,23 @@
 <div class="panel controls"><div class="panel-title"><h2>Observation brief</h2><span id="model">Checking model…</span></div><form id="settings"><label for="brief">What work should the observer describe?</label><textarea id="brief" rows="3" maxlength="4000" required>Describe the visible physical work, including placing and moving cones.</textarea><div class="controls-row"><label for="interval">Observe every <input id="interval" type="number" value="5" min="1" max="60" step="1" required> seconds</label><button id="pause" type="button" class="secondary">Pause</button><button id="start" type="submit">Start observing</button></div></form><p id="agent-status" role="status">Preparing observer…</p><p id="error" role="alert" hidden></p><p class="footnote">Intervals use local video receipt time. Summaries arrive after analysis; they may lag the live feed. Pausing lets the current analysis finish.</p></div>
 </section>
 <section class="panel journal"><div class="panel-title"><div><p class="eyebrow">THE WORK JOURNAL</p><h2>What happened</h2></div><span id="count">0 entries</span></div><div id="entries"><div class="empty"><span>↳</span><h3>The story starts here.</h3><p>Connect your video and start observing.<br>Each note will include its visual evidence.</p></div></div></section>
-</div><footer>FieldNotes / Prototype<span>Camera observations, not inferred intent. Flight remains with the operator.</span></footer>
-</main><script src="/static/app.js" defer></script>
+</div>
+<section class="panel memory-panel">
+<div class="panel-title"><div><p class="eyebrow">EVIDENCE YOU CAN REVISIT</p><h2>Visual memory</h2></div><span id="memory-mode">Loading…</span></div>
+<p id="memory-status" role="status"></p><p id="memory-error" role="alert" hidden></p>
+<div class="memory-tools"><label>Session <select id="memory-session"></select></label><button id="memory-refresh" type="button">Refresh history</button></div>
+<form id="memory-search"><label for="memory-query">Find earlier evidence</label><div class="controls-row"><input id="memory-query" placeholder="An open laptop" maxlength="1000" required><button>Search images</button></div></form>
+<p class="footnote">Similarity retrieves candidates. It does not prove a condition or an action.</p>
+<div id="memory-results" class="memory-thumbs"></div>
+<label for="memory-time">Saved observation <span id="memory-time-label"></span></label><input id="memory-time" type="range" min="0" max="0" value="0">
+<div class="memory-columns"><div>
+<div class="memory-selection"><img id="memory-original" alt="Selected original evidence"><canvas id="memory-points"></canvas></div>
+<p id="memory-source" class="meta"></p>
+<div class="controls-row"><input id="track-label" placeholder="Selection label" maxlength="120"><select id="track-point-kind"><option value="1">Include point</option><option value="0">Exclude point</option></select><button id="track-clear" type="button">Clear points</button></div>
+<p class="footnote">Click the original image to select a region. Add exclude points to refine the seed. Image coordinates do not establish world movement.</p>
+<div class="controls-row"><button id="track-preview" type="button">Preview seed mask</button><button id="track-start" type="button">Start tracking</button></div>
+<div id="memory-tracks"></div>
+</div><div><h3>As observed at this time</h3><p class="footnote">Last observed is not currently known. Interpretations remain fallible.</p><div id="memory-state"></div><h3>Changes and uncertainty</h3><div id="memory-changes"></div></div></div>
+</section><footer>FieldNotes / Prototype<span>Camera observations, not inferred intent. Flight remains with the operator.</span></footer>
+</main><script src="/static/app.js" defer></script><script src="/static/memory.js" defer></script>
 </body></html>

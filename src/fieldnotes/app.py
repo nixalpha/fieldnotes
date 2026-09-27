@@ -18,6 +18,8 @@ from .core import Runtime
 from .ingest import Decoder
 from .mcp_server import make_mcp
 from .model import VisionModel
+from .memory import Memory
+from .memory_api import router as memory_router
 
 STATIC = Path(__file__).parent / "static"
 
@@ -41,11 +43,17 @@ class SummarySettings(BaseModel):
 
 def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = "drone",
                stub: bool = False, autostart: bool = False, ingest: bool = True,
-               rtmp_url: str = "rtmp://127.0.0.1:1935/live/drone") -> FastAPI:
+               rtmp_url: str = "rtmp://127.0.0.1:1935/live/drone", archive: bool = False, model_root: Path | None = None) -> FastAPI:
     runtime = Runtime(data_dir or Path(os.getenv("FIELDNOTES_DATA_DIR", "data")), source)
+    if archive:
+        from .memory_replay import ArchiveRuntime
+        runtime.journal.close()
+        runtime = ArchiveRuntime(data_dir)
+    memory = Memory(runtime, model_root=model_root, archive=archive, mock=stub or archive)
+    runtime.memory = memory
     mcp = make_mcp(runtime)
     mcp_app = mcp.streamable_http_app()
-    agent = Agent(runtime, f"http://127.0.0.1:{port}/mcp", VisionModel(stub))
+    agent = Agent(runtime, f"http://127.0.0.1:{port}/mcp", VisionModel(stub or archive))
     agent.autostart = autostart
     decoder = Decoder(runtime, rtmp_url)
     publish_url = f"rtmp://{lan_ip()}:1935/live/drone"
@@ -53,12 +61,14 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     @asynccontextmanager
     async def lifespan(app):
         async with mcp.session_manager.run():
-            decoder_task = asyncio.create_task(decoder.run()) if ingest else None
-            agent.launch()
+            decoder_task = asyncio.create_task(decoder.run()) if ingest and not archive else None
+            if not archive: agent.launch()
+            memory.launch()
             try:
                 yield
             finally:
                 await agent.close()
+                await memory.close()
                 if decoder_task:
                     decoder_task.cancel()
                     await asyncio.gather(decoder_task, return_exceptions=True)
@@ -66,6 +76,8 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
 
     app = FastAPI(title="FieldNotes", lifespan=lifespan)
     app.state.runtime, app.state.agent = runtime, agent
+    app.state.memory = memory
+    app.include_router(memory_router(memory))
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -92,6 +104,7 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
 
     @app.post("/api/summaries/start")
     async def start(settings: SummarySettings):
+        if archive: raise HTTPException(409, "Archive mode: use the explicit mock MCP exercise; no paid model calls")
         try:
             agent.start(settings.brief, settings.interval_seconds)
         except ValueError as exc:
@@ -128,6 +141,9 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
 
     @app.get("/api/preview")
     async def preview(request: Request):
+        if archive:
+            frames = memory.store.frames(runtime.session_id, limit=1)
+            return FileResponse(memory.store.asset(frames[0]["asset"])) if frames else JSONResponse({"detail":"Empty archive"}, status_code=404)
         async def frames():
             queue = runtime.buffer.subscribe()
             try:

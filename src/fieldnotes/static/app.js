@@ -16,6 +16,18 @@ function status({stream, agent, publish_url}) {
   $('connection').textContent = stream.state.toUpperCase(); $('connection').className = stream.state;
   $('session-id').textContent = `SESSION ${stream.session_id.slice(0,8)}`;
   $('freshness').textContent = stream.latest_frame_age_ms === null ? 'Waiting for video' : `Last frame ${(stream.latest_frame_age_ms/1000).toFixed(1)}s ago`;
+  if (stream.state === 'archive') {
+    $('source').textContent='SAMPLED REPLAY / MOCK INTERPRETATIONS';
+    $('video-label').textContent='SAVED ORIGINAL · NOT LIVE';
+    $('freshness').textContent='Historical evidence';
+    $('video-placeholder').hidden=true;
+    $('preview').parentElement.classList.remove('stale');
+    $('start').disabled=true; $('pause').disabled=true;
+    $('publish').textContent='Archive mode · RTMP disabled';
+    $('agent-status').textContent='Authored mock interpretations · no paid model calls';
+    $('model').textContent='fixture-model';
+    return;
+  }
   const fresh = stream.state === 'live';
   $('preview').parentElement.classList.toggle('stale', !fresh);
   $('video-placeholder').hidden = fresh;
@@ -25,7 +37,7 @@ function status({stream, agent, publish_url}) {
   $('start').textContent = agent.enabled ? 'Restart observing' : 'Start observing';
   $('pause').disabled = !agent.enabled;
   $('agent-status').textContent = !agent.available ? 'Observer unavailable · preview remains active' : agent.enabled ? `${agent.busy ? 'Analyzing' : 'Observing'} · ${agent.interval_seconds}s windows${agent.pending ? ' · next window queued' : ''}${agent.degraded_cadence ? ' · analysis is behind live video' : ''}` : `Paused${agent.busy ? ' · finishing current analysis' : ''}`;
-  showError(agent.model_error || agent.error);
+  showError(agent.model_error || agent.error || agent.memory_error);
 }
 async function journal() {
   if (loading) return; loading = true;
@@ -50,7 +62,7 @@ async function journal() {
         article.append(thumbs);
       }
       const delay = Math.max(0, (Date.parse(entry.generated_at)-Date.parse(entry.end_at))/1000).toFixed(1);
-      article.append(text('div', `Written ${fmt(entry.generated_at)} · ${delay}s after interval${entry.model ? ` · ${entry.model}` : ''} · session ${entry.session_id.slice(0,8)}`, 'meta'));
+      article.append(text('div', `Written ${fmt(entry.generated_at)} · ${entry.model === "fixture-model" ? "MOCK REPLAY · authored interpretation" : delay + "s after interval"}${entry.model ? ` · ${entry.model}` : ''} · session ${entry.session_id.slice(0,8)}`, 'meta'));
       return article;
     });
     container.replaceChildren(...nodes); if (nearBottom) container.scrollTop = container.scrollHeight;
