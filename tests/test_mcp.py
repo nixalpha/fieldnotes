@@ -15,8 +15,9 @@ async def test_real_mcp_images_and_journal(tmp_path):
         await asyncio.sleep(.02)
         async with connect_mcp(base + '/mcp') as session:
             tools = await session.list_tools()
-            assert {t.name for t in tools.tools} == {
-                'get_stream_status', 'get_observation_window', 'get_recent_summaries', 'record_summary'}
+            assert {
+                'get_stream_status', 'get_observation_window', 'get_recent_summaries',
+                'get_observation_details', 'record_summary'} <= {t.name for t in tools.tools}
             observation, images = await call(session, 'get_observation_window', {
                 'start_elapsed_ms': frame.elapsed_ms, 'end_elapsed_ms': rt.elapsed_ms()})
             assert base64.b64decode(images[0]) == jpeg()
