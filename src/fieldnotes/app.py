@@ -20,6 +20,7 @@ from .mcp_server import make_mcp
 from .model import VisionModel
 from .memory import Memory
 from .sessions import Sessions
+from .portal import Portal, router as portal_router
 from .memory_api import router as memory_router
 
 STATIC = Path(__file__).parent / "static"
@@ -59,11 +60,13 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     mcp_app = mcp.streamable_http_app()
     agent = Agent(runtime, f"http://127.0.0.1:{port}/mcp", VisionModel(stub or archive))
     agent.autostart = autostart
+    portal = Portal(runtime, agent, memory, archive)
     def session_ended(session, reason):
         try:
             agent.session_ended(session, reason)
         finally:
             memory.end_session(session['session_id'], reason)
+            portal.ended(session, reason)
     runtime.sessions.on_end = session_ended
     decoder = Decoder(runtime, rtmp_url)
     publish_url = f"rtmp://{lan_ip()}:1935/live/drone"
@@ -86,6 +89,7 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
                     await asyncio.gather(decoder_task, return_exceptions=True)
                 runtime.sessions.shutdown()
                 await agent.close()
+                await portal.close()
                 await memory.close()
                 runtime.journal.close()
 
@@ -93,6 +97,7 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     app.state.runtime, app.state.agent = runtime, agent
     app.state.memory = memory
     app.include_router(memory_router(memory))
+    app.include_router(portal_router(portal))
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):

@@ -185,3 +185,11 @@ Live sessions now follow decoded video: the first frame starts a session and 10 
 ### Real live summaries
 
 Start live observation with `uv run --extra perception fieldnotes dev --autostart`. This uses `OPENAI_MODEL` (currently configured as `gpt-6-luna`) and `OPENAI_API_KEY` from `.env`. Missing credentials or model errors are reported; live mode never substitutes placeholder summaries. Existing historical stub entries remain labeled as such. Local search uses MobileCLIP2-S0, and selected-region tracking uses EdgeTAM.
+
+## Redesigned portal
+
+The default page is now **Sessions**, with **Live** in the top navigation and a dedicated review workspace for each session. **Explore demo** opens an isolated six-session demonstration with generated camera imagery; it never substitutes demo data into real recordings.
+
+Session accounts are synthesized from retained observations using the configured model after session end, or via **Generate overview** in review. This adds model usage; merely opening a historical session does not trigger generation. Image search and tracking remain available through the backend and MCP, but are removed from the UI.
+
+See [portal routes, synthesis behavior, APIs, assets, and verification status](docs/portal.md). This overhaul has **not been verified**, per request; no tests, builds, browser checks or application restarts were run.

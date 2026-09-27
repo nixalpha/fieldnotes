@@ -71,6 +71,21 @@ class Sessions:
             raise ValueError('Unknown session_id')
         return json.loads(rows[0][0])
 
+    def rename(self, session_id, name):
+        name = name.strip()
+        if not 1 <= len(name) <= 100:
+            raise ValueError('Name must contain 1–100 characters.')
+        body = self.get(session_id)
+        body.update(name=name, display_name=name)
+        self._save(body)
+        # Keep lifecycle snapshots in sync so later frame/end writes retain the name.
+        if self.current and self.current['session_id'] == session_id:
+            self.current.update(name=name, display_name=name)
+        if self.last_ended and self.last_ended['session_id'] == session_id:
+            self.last_ended.update(name=name, display_name=name)
+        self.runtime.revision += 1
+        return body
+
     def list(self, limit=50, cursor=None):
         if not 1 <= limit <= 200:
             raise ValueError('limit must be 1..200')

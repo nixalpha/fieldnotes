@@ -263,6 +263,7 @@ class Runtime:
         frames, gaps = self.buffer.select(start, end)
         observation = {"observation_id": oid, "session_id": self.session_id, "source": self.source,
                        "start_elapsed_ms": start, "end_elapsed_ms": end,
+                       "brief": getattr(self, "observation_brief", None),
                        "start_at": (self.started_utc + timedelta(milliseconds=start)).isoformat(),
                        "end_at": (self.started_utc + timedelta(milliseconds=end)).isoformat(),
                        "coverage": "empty" if not frames else "partial" if gaps else "complete",
