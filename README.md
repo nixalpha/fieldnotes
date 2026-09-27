@@ -13,11 +13,11 @@ real visual summaries. There is no Node/frontend build step.
 ```bash
 cd /Users/macos/coding/FieldNotes
 brew install ffmpeg mediamtx
-uv sync --locked
-cp .env.example .env
+uv sync --locked --extra perception
+[ -f .env ] || cp .env.example .env
 # Edit .env and set OPENAI_API_KEY. Do not commit credentials.
 uv run fieldnotes doctor
-uv run fieldnotes dev
+uv run --extra perception fieldnotes dev
 ```
 
 Open **http://127.0.0.1:8000**. Copy the RTMP publish address shown there. The app starts its own
@@ -57,12 +57,12 @@ Follow the worker with DJI FocusTrack while they place large cones, move one, th
 Check that journal entries cite the corresponding five-second intervals and show evidence images.
 Occlusion and camera movement should be described as uncertainty rather than invented work.
 
-### Replay without a drone or API spend
+### Replay without a drone, using real vision
 
 In terminal one:
 
 ```bash
-uv run fieldnotes dev --source replay --stub --autostart
+uv run --extra perception fieldnotes dev --source replay --autostart
 ```
 
 In terminal two:
@@ -72,8 +72,7 @@ uv run fieldnotes replay /absolute/path/to/video.mp4 --loop
 ```
 
 The replay uses the **same RTMP receiver and decoder**. The app visibly labels all frames and entries
-as replay. The stub produces an explicit test message, not fake visual analysis. Omit `--stub` to use
-real vision on the replay with your configured API key. The replay command refuses to publish into a
+as replay. Summaries use the real configured vision model and incur API usage. Live `dev` mode no longer accepts `--stub`; authored mock interpretations are confined to the isolated saved-archive workflow. The replay command refuses to publish into a
 session labeled `drone`. Only one publisher can use `live/drone` at a time.
 
 Use Ctrl+C to stop the app and its owned MediaMTX/FFmpeg processes. The replay publisher is separately
@@ -178,3 +177,11 @@ SQLite temporal interpretations, MobileCLIP2-S0 visual retrieval, and selective 
 Quick setup: `uv sync --extra perception`, then `uv run --extra perception fieldnotes setup-memory-models`.
 
 Run the isolated 55-image exercise using `replay-memory`, `view-memory`, and `exercise-memory-mcp` as documented. Generative interpretations are clearly labeled mocks; embeddings and masks use the actual local models.
+
+### Recording sessions
+
+Live sessions now follow decoded video: the first frame starts a session and 10 seconds without frames ends it. MCP provides `list_sessions`, `start_session`, and `end_session`; explicitly ending during a continuous stream causes the next frame to start another session. See [session operation and manual checks](docs/sessions.md). These changes require an application restart and have not been verified.
+
+### Real live summaries
+
+Start live observation with `uv run --extra perception fieldnotes dev --autostart`. This uses `OPENAI_MODEL` (currently configured as `gpt-6-luna`) and `OPENAI_API_KEY` from `.env`. Missing credentials or model errors are reported; live mode never substitutes placeholder summaries. Existing historical stub entries remain labeled as such. Local search uses MobileCLIP2-S0, and selected-region tracking uses EdgeTAM.

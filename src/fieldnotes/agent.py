@@ -55,6 +55,8 @@ class Agent:
         self.pending: dict | None = None
         self.wakeup = asyncio.Event()
         self.clock: WindowClock | None = None
+        self.clock_session: str | None = None
+        self.last_window_end: int | None = None
         self.busy = False
         self.error: str | None = None
         self.memory_error: str | None = None
@@ -84,6 +86,8 @@ class Agent:
         self.enabled = False
         self.generation += 1
         self.clock = None
+        self.clock_session = None
+        self.last_window_end = None
         if self.pending:
             self.runtime.record_system(self.pending, "skipped", "Summary paused before analysis.")
             self.pending = None
@@ -93,6 +97,36 @@ class Agent:
             self.runtime.record_system(self.pending, "skipped", "Model was busy; a newer interval replaced this one.")
         self.pending = observation
         self.wakeup.set()
+
+    def session_ended(self, session: dict, reason: str):
+        """Pin the remaining evidence before the session buffer is cleared."""
+        first, last = session.get('first_frame'), session.get('last_frame')
+        if first and last:
+            end = last['elapsed_ms'] + 1
+            interval = round(self.interval_seconds * 1000)
+            start = self.last_window_end if self.clock_session == session['session_id'] else None
+            if start is None:
+                start = max(first['elapsed_ms'], end - interval)
+            while start < end:
+                stop = min(start + interval, end)
+                observation = self.runtime.observe(start, stop, session['session_id'])
+                observation = {**observation, 'final_session_window': stop == end,
+                               'partial_final_window': stop - start < interval,
+                               'session_end_reason': reason}
+                with self.runtime.journal.db:
+                    self.runtime.journal.db.execute('UPDATE observations SET body=? WHERE id=?',
+                        (json.dumps(observation), observation['observation_id']))
+                self.runtime.memory.ingest_observation(observation)
+                if self.enabled and observation['frames']:
+                    self.enqueue(observation)
+                else:
+                    self.runtime.record_system(observation, 'skipped' if observation['frames'] else 'no_video',
+                        'Session ended; observer was paused.' if observation['frames'] else 'No retained video for the final interval.')
+                start = stop
+        self.clock = None
+        self.clock_session = None
+        self.last_window_end = None
+        self.generation += 1
 
     async def initialize(self):
         await self.model.check()
@@ -104,17 +138,27 @@ class Agent:
             try:
                 async with connect_mcp(self.url) as session:
                     while True:
-                        if self.enabled and self.runtime.first_frame_ms is not None:
+                        if self.enabled and self.runtime.session_id and self.runtime.first_frame_ms is not None:
+                            sid = self.runtime.session_id
                             now = self.runtime.elapsed_ms()
-                            if self.clock is None:
+                            if self.clock is None or self.clock_session != sid:
                                 self.clock = WindowClock(self.runtime.first_frame_ms,
-                                                         round(self.interval_seconds * 1000), now)
+                                                         round(self.interval_seconds * 1000),
+                                                         min(now, self.runtime.last_frame_ms))
+                                self.clock_session = sid
+                                self.last_window_end = self.clock.end - self.clock.interval
                             generation = self.generation
-                            for start, end in self.clock.due(now):
+                            # Don't invent ongoing empty windows after video has stopped.
+                            for start, end in self.clock.due(min(now, self.runtime.last_frame_ms + 1)):
+                                if sid != self.runtime.session_id:
+                                    break
+                                # Pin synchronously before the MCP await can cross a boundary.
+                                self.runtime.observe(start, end, sid)
+                                self.last_window_end = end
                                 observation, _ = await call(session, "get_observation_window", {
-                                    "start_elapsed_ms": start, "end_elapsed_ms": end})
+                                    "start_elapsed_ms": start, "end_elapsed_ms": end, "session_id": sid})
                                 if not self.enabled or generation != self.generation:
-                                    self.runtime.record_system(observation, "skipped", "Observation settings changed.")
+                                    self.runtime.record_system(observation, "skipped", "Observation settings or session changed.")
                                     continue
                                 if observation["coverage"] == "empty":
                                     self.runtime.record_system(observation, "no_video", "No video frames received in this interval.")
@@ -141,8 +185,9 @@ class Agent:
                             # Reading the pinned observation again avoids losing evidence to buffer eviction.
                             metadata, images = await call(session, "get_observation_window", {
                                 "start_elapsed_ms": observation["start_elapsed_ms"],
-                                "end_elapsed_ms": observation["end_elapsed_ms"]})
-                            recent, _ = await call(session, "get_recent_summaries", {"limit": 3})
+                                "end_elapsed_ms": observation["end_elapsed_ms"],
+                                "session_id": observation["session_id"]})
+                            recent, _ = await call(session, "get_recent_summaries", {"limit": 3, "session_id": observation["session_id"]})
                             priors = list(recent["summaries"])
                             try:
                                 memory, _ = await call(session, "get_memory_state", {

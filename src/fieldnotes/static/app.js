@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const text = (tag, value, cls) => { const el = document.createElement(tag); el.textContent = value; if (cls) el.className = cls; return el; };
-let publish = '', loading = false;
+let publish = '', loading = false, journalSession = '';
 const fmt = (iso) => new Date(iso).toLocaleTimeString([], {hour12: false});
 async function api(path, body) {
   const response = await fetch(path, body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
@@ -14,7 +14,14 @@ function status({stream, agent, publish_url}) {
   $('source').textContent = `${stream.source.toUpperCase()} / ${agent.model === 'stub-no-vision' ? 'TEST STUB' : 'OBSERVATION'}`;
   $('video-label').textContent = stream.source === 'replay' ? 'PRERECORDED REPLAY' : 'DRONE FEED';
   $('connection').textContent = stream.state.toUpperCase(); $('connection').className = stream.state;
-  $('session-id').textContent = `SESSION ${stream.session_id.slice(0,8)}`;
+  $('session-id').textContent = stream.session_id ? `SESSION ${stream.session_id.slice(0,8)}` : 'NO ACTIVE SESSION';
+  const grace = stream.interruption_grace_remaining_ms;
+  $('session-state').textContent = stream.state === 'archive' ? 'Historical archive' : grace !== null && grace !== undefined
+    ? `Video interrupted · session closes in ${Math.ceil(grace/1000)}s without frames`
+    : stream.session_state === 'ended' ? 'Session ended · next video starts a new session'
+    : stream.session_state === 'waiting_for_video' ? 'Waiting for video'
+    : stream.session_name || 'Recording session';
+  window.dispatchEvent(new CustomEvent('fieldnotes-stream-status', {detail:stream}));
   $('freshness').textContent = stream.latest_frame_age_ms === null ? 'Waiting for video' : `Last frame ${(stream.latest_frame_age_ms/1000).toFixed(1)}s ago`;
   if (stream.state === 'archive') {
     $('source').textContent='SAMPLED REPLAY / MOCK INTERPRETATIONS';
@@ -41,10 +48,12 @@ function status({stream, agent, publish_url}) {
 }
 async function journal() {
   if (loading) return; loading = true;
+  const requestedSession = journalSession;
   try {
-    const {entries} = await api('/api/journal');
+    const {entries} = requestedSession ? await api('/api/journal?session_id='+encodeURIComponent(requestedSession)) : {entries:[]};
+    if(requestedSession !== journalSession)return;
     $('count').textContent = `${entries.length} recent entries`;
-    if (!entries.length) return;
+    if (!entries.length) { $('entries').replaceChildren(text('p', requestedSession ? 'No journal entries for this session yet.' : 'Waiting for a recording session.')); return; }
     const container = $('entries'), nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
     const nodes = entries.map(entry => {
       const article = text('article', '', `entry${entry.status === 'completed' ? '' : ' system'}`);
@@ -66,8 +75,9 @@ async function journal() {
       return article;
     });
     container.replaceChildren(...nodes); if (nearBottom) container.scrollTop = container.scrollHeight;
-  } catch(e) { showError(e.message); } finally { loading=false; }
+  } catch(e) { showError(e.message); } finally { loading=false; if(requestedSession !== journalSession)journal(); }
 }
+window.addEventListener('fieldnotes-session-selected', e=>{journalSession=e.detail.session_id||'';journal();});
 $('settings').addEventListener('submit', async e => { e.preventDefault(); try { await api('/api/summaries/start', {brief:$('brief').value, interval_seconds:Number($('interval').value)}); status(await api('/api/status')); } catch(e) { showError(e.message); } });
 $('pause').onclick = async () => { try { await api('/api/summaries/pause', {}); status(await api('/api/status')); } catch(e) { showError(e.message); } };
 $('copy').onclick = async () => { try { await navigator.clipboard.writeText(publish); $('copy').textContent='Copied'; setTimeout(() => $('copy').textContent='Copy',1500); } catch { showError('Copy unavailable. Select the RTMP address and copy it manually.'); } };

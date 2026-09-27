@@ -29,7 +29,7 @@ FIELDNOTES_TRACK_DEVICE=cpu
 ## Live operation
 
 ```bash
-uv run --extra perception fieldnotes dev
+uv run --extra perception fieldnotes dev --autostart
 ```
 
 Retained summary evidence is indexed in the background. While a visual track is active, decoded frames are additionally retained for that track. Indexing and model inference do not run on the video/API event loop. A bounded frame subscription may skip inputs under load; tracking continuity remains tentative. Epoch changes or more than three seconds between retained observations stop the track. This threshold describes observation continuity, not proof of a network outage.
@@ -125,3 +125,9 @@ An evidence ID is `<session_id>:<frame_id>`. A caller supplies a `MemoryProposal
 - In a separate live session, manually check preview/summaries without optional weights, stream reconnect, and tracking under load.
 
 The saved-image exercise does not establish live ingestion behavior, physical identity, metric geometry, real LLM accuracy, or real-time performance. No unrelated test suites or benchmarks are part of this implementation exercise.
+
+## Recording session lifecycle
+
+See [sessions.md](sessions.md) for automatic boundaries, MCP start/end tools, session-filtered journals, historical selection and follow-live behavior. Archive sessions remain read-only for lifecycle mutations.
+
+Live `dev` runs always use the configured real vision model; `--stub` is no longer accepted. The isolated archive commands still preserve their explicitly authored fixtures. Old fixture and stub history is never relabeled as real inference.

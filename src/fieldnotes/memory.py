@@ -19,7 +19,7 @@ class Memory:
         self.store=MemoryStore(runtime.journal.directory,'mock' if mock else 'model_interpretation')
         self.models=Models(Path(model_root or os.getenv('FIELDNOTES_MEMORY_MODELS','data/models')))
         self.search_gate=asyncio.Semaphore(1)
-        self.tasks=[]; self.track_tasks={};self.stops={};self.worker_error=None
+        self.tasks=[]; self.track_tasks={};self.stops={};self.stop_reasons={};self.worker_error=None
         self.closing=False
         self.cursor=0;self.index_enabled=(self.models.root/'mobileclip2_s0.pt').exists()
         for track in self.store.tracks():
@@ -37,7 +37,10 @@ class Memory:
     def status(self):
         n=self.store.rows('SELECT count(*) FROM evidence')[0][0]
         indexed=self.store.rows('SELECT count(*) FROM embeddings WHERE version=?',(EMBED_VERSION,))[0][0]
-        return {'archive':self.archive,'interpretation_source':self.store.provenance,'sessions':self.store.sessions(),
+        registry = self.runtime.sessions
+        page = registry.list(200)
+        return {**registry.status(), 'archive':self.archive,'interpretation_source':self.store.provenance,
+                'sessions':page['sessions'], 'sessions_next_cursor':page['next_cursor'],
                 'models':self.models.status(),'evidence_count':n,'indexed_count':indexed,'index_backlog':n-indexed,
                 'rejected_memory_writes':[json.loads(r[0]) for r in self.store.rows('SELECT body FROM processing ORDER BY rowid DESC LIMIT 20')],
                 'indexing_enabled':self.index_enabled,'worker_error':self.worker_error,'tracks':self.store.tracks(),
@@ -68,12 +71,20 @@ class Memory:
         try:
             while True:
                 frame=await queue.get()
-                if not any(t['state'] in ('queued','running','waiting') for t in self.store.tracks()): continue
+                if frame.session_id != self.runtime.session_id: continue
+                if not any(t['session_id']==frame.session_id and t['state'] in ('queued','running','waiting') for t in self.store.tracks()): continue
                 path=self.store.root/'evidence'/frame.session_id/f'{frame.frame_id}.jpg'
                 path.parent.mkdir(parents=True,exist_ok=True)
                 if not path.exists(): path.write_bytes(frame.jpeg)
                 self.store.add_evidence(frame.metadata())
         finally: self.runtime.buffer.unsubscribe(queue)
+
+    def end_session(self, session_id, reason):
+        for tid, event in list(self.stops.items()):
+            track = self.store.track(tid)
+            if track['session_id'] == session_id:
+                self.stop_reasons[tid] = 'Session ended: ' + reason
+                event.set()
 
     async def search(self, query, session, start=0, end=None, limit=6):
         if self.search_gate.locked():
@@ -120,7 +131,7 @@ class Memory:
         stop=threading.Event();self.stops[tid]=stop
         task=asyncio.create_task(asyncio.to_thread(self.track_worker,track,stop))
         self.track_tasks[tid]=task
-        task.add_done_callback(lambda _: (self.track_tasks.pop(tid,None),self.stops.pop(tid,None)))
+        task.add_done_callback(lambda _: (self.track_tasks.pop(tid,None),self.stops.pop(tid,None),self.stop_reasons.pop(tid,None)))
         return track
 
     def stop_track(self, tid):
@@ -140,7 +151,9 @@ class Memory:
             while not stop.is_set():
                 frames=self.store.frames(track['session_id'],start=last['elapsed_ms'],limit=8)
                 if mask is not None and len(frames)<=1:
-                    if self.archive: track['state']='completed';break
+                    recorded = self.runtime.sessions.get(track['session_id'])
+                    if self.archive or recorded['state'] in ('ended','interrupted'):
+                        track['state']='completed';break
                     track['state']='waiting';self.store.save_track(track);stop.wait(0.5);continue
                 if track['preview_only']: frames=frames[:1]
                 discontinuity=None
@@ -185,4 +198,8 @@ class Memory:
         except Exception as exc:
             track.update(state='error',reason=f'{type(exc).__name__}: {exc}')
         finally:
+            if tid in self.stop_reasons:
+                track.update(state='stopped' if track['state']!='error' else 'error', session_end_reason=self.stop_reasons[tid])
+                if track['state']=='stopped': track['reason']=self.stop_reasons[tid]
+                self.track_event(track, {'kind':'session_ended','reason':self.stop_reasons[tid]})
             track['updated_at']=utc_now();self.store.save_track(track)

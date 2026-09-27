@@ -55,6 +55,8 @@ class MemoryStore:
         CREATE TABLE IF NOT EXISTS track_frames(track TEXT, evidence TEXT, body TEXT, PRIMARY KEY(track,evidence));
         CREATE TABLE IF NOT EXISTS embeddings(evidence TEXT, version TEXT, body TEXT, PRIMARY KEY(evidence,version));
         CREATE TABLE IF NOT EXISTS processing(id TEXT PRIMARY KEY, body TEXT);
+        CREATE TABLE IF NOT EXISTS recording_sessions(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, state TEXT NOT NULL, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS session_requests(id TEXT PRIMARY KEY, signature TEXT NOT NULL, body TEXT NOT NULL);
         """)
 
     def rows(self, query, args=()):

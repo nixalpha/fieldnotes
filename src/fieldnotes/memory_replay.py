@@ -28,11 +28,14 @@ class ArchiveRuntime(Runtime):
     def elapsed_ms(self): return self.last_frame_ms+1
 
     def status(self):
-        return {'session_id':self.session_id,'source':'replay','state':'archive','elapsed_ms':self.elapsed_ms(),
+        return {'active_session_id':None,'session_state':'ended','automatic_start':False,
+                'session_id':self.session_id,'source':'replay','state':'archive','elapsed_ms':self.elapsed_ms(),
                 'first_frame_ms':self.first_frame_ms,'stream_epoch':self.epoch,'latest_frame_age_ms':None,
                 'dimensions':self.last_dimensions,'input_kind':'sampled_evidence','decoder_error':None}
 
-    def observe(self,start,end):
+    def observe(self,start,end,session_id=None):
+        if session_id is not None and session_id != self.session_id:
+            raise ValueError('Session is not in this archive')
         if start<0 or end<=start or end-start>60000 or end>self.elapsed_ms():
             raise ValueError('Window must be positive, at most 60 seconds and within saved history')
         oid=f'{self.session_id}-{start}-{end}'

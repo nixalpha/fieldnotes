@@ -72,6 +72,13 @@ class FrameBuffer:
                 queue.get_nowait()
             queue.put_nowait(frame)
 
+    def clear(self) -> None:
+        self.frames.clear()
+        self.byte_size = 0
+        for queue in self.subscribers:
+            while not queue.empty():
+                queue.get_nowait()
+
     def subscribe(self) -> asyncio.Queue:
         queue: asyncio.Queue[Frame] = asyncio.Queue(maxsize=1)
         self.subscribers.add(queue)
@@ -180,7 +187,8 @@ class Runtime:
         self.clock = clock
         self.started = clock()
         self.started_utc = datetime.now(UTC)
-        self.session_id = uuid.uuid4().hex
+        self.session_id = None
+        self.sessions = None
         self.source = source
         self.buffer = FrameBuffer()
         self.journal = Journal(directory)
@@ -197,6 +205,10 @@ class Runtime:
         return int((self.clock() - self.started) * 1000)
 
     def accept(self, jpeg: bytes, width: int, height: int) -> Frame:
+        if self.sessions:
+            self.sessions.before_frame()
+        elif self.session_id is None:
+            self.session_id = uuid.uuid4().hex
         elapsed = self.elapsed_ms()
         frame = Frame(self.session_id, self.epoch, self.next_frame, utc_now(), elapsed,
                       width, height, self.source, jpeg)
@@ -206,6 +218,8 @@ class Runtime:
         if self.first_frame_ms is None:
             self.first_frame_ms = elapsed
         self.decoder_state, self.decoder_error = "live", None
+        if self.sessions:
+            self.sessions.received(frame)
         self.buffer.append(frame)
         return frame
 
@@ -218,7 +232,8 @@ class Runtime:
             state = "reconnecting" if state == "reconnecting" else "stale"
         elif age is not None:
             state = "live"
-        return {"session_id": self.session_id, "source": self.source, "state": state,
+        return {**(self.sessions.status() if self.sessions else {}),
+                "session_id": self.session_id, "source": self.source, "state": state,
                 "elapsed_ms": now, "first_frame_ms": self.first_frame_ms, "stream_epoch": self.epoch,
                 "latest_frame_age_ms": age, "dimensions": self.last_dimensions,
                 "buffer_frames": len(self.buffer.frames), "buffer_bytes": self.buffer.byte_size,
@@ -226,15 +241,24 @@ class Runtime:
                 "buffer_end_ms": self.buffer.frames[-1].elapsed_ms if self.buffer.frames else None,
                 "decoder_error": self.decoder_error}
 
-    def observe(self, start: int, end: int) -> dict:
+    def observe(self, start: int, end: int, session_id: str | None = None) -> dict:
         if start < 0 or end <= start or end - start > 60_000:
             raise ValueError("Window must be positive and at most 60 seconds")
-        if end > self.elapsed_ms() + 10:
-            raise ValueError("Observation window has not finished")
-        oid = f"{self.session_id}-{start}-{end}"
+        sid = session_id or self.session_id
+        if not sid:
+            raise ValueError("No active session; wait for video or call start_session")
+        oid = f"{sid}-{start}-{end}"
         existing = self.journal.observation(oid)
         if existing:
             return existing
+        if sid != self.session_id:
+            raise ValueError("Historical window is not retained; retrieve saved evidence instead")
+        if end > self.elapsed_ms() + 10:
+            raise ValueError("Observation window has not finished")
+        if self.sessions:
+            current = self.sessions.current
+            if current is None or start < current['created_elapsed_ms']:
+                raise ValueError("Observation window crosses the session boundary")
         self.buffer.evict(self.elapsed_ms())
         frames, gaps = self.buffer.select(start, end)
         observation = {"observation_id": oid, "session_id": self.session_id, "source": self.source,

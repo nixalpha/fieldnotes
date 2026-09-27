@@ -28,9 +28,20 @@ def port_free(port: int, host: str = "127.0.0.1") -> bool:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, port))
+            # On macOS, a reusable bind alone can coexist with a wildcard listener.
+            sock.listen(1)
             return True
         except OSError:
             return False
+
+
+def tcp_ready(port: int, host: str = "127.0.0.1") -> bool:
+    """Readiness is a successful connection, not a failed competing bind."""
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
 
 
 @app.command()
@@ -68,7 +79,6 @@ def terminate(proc):
 def dev(
     port: int = typer.Option(8000, min=1024, max=65535),
     source: str = typer.Option("drone", help="drone or replay; applies to the entire session"),
-    stub: bool = typer.Option(False, help="Use a clearly labeled test model; no API calls"),
     autostart: bool = typer.Option(False, help="Start summaries after the model capability check"),
     external_mediamtx: bool = typer.Option(False, help="Use an already running local MediaMTX"),
 ):
@@ -89,17 +99,32 @@ def dev(
     log_file = None
     try:
         if not external_mediamtx:
-            log_file = (data / "mediamtx.log").open("ab")
+            log_path = data / "mediamtx.log"
+            log_file = log_path.open("ab")
+            log_start = log_file.tell()
             media = subprocess.Popen(["mediamtx", str(Path(__file__).with_name("mediamtx.yml"))],
                                      stdout=log_file, stderr=subprocess.STDOUT, start_new_session=True)
             deadline = time.monotonic() + 5
-            while port_free(1935) and time.monotonic() < deadline and media.poll() is None:
+            ready = False
+            while media.poll() is None and time.monotonic() < deadline:
+                if tcp_ready(1935):
+                    ready = True
+                    break
                 time.sleep(0.1)
-            if media.poll() is not None or port_free(1935):
-                raise RuntimeError(f"MediaMTX failed to start; see {data / 'mediamtx.log'}")
+            exit_code = media.poll()
+            if exit_code is not None or not ready:
+                with log_path.open("rb") as startup_log:
+                    startup_log.seek(max(log_start, log_path.stat().st_size - 4000))
+                    detail = startup_log.read(4000).decode(errors="replace").strip()
+                cause = f"exited with code {exit_code}" if exit_code is not None else "RTMP did not accept connections within 5 seconds"
+                typer.echo(f"MediaMTX startup failed: {cause}. Log: {log_path}", err=True)
+                if detail:
+                    typer.echo(detail, err=True)
+                raise typer.Exit(1)
         typer.echo(f"Dashboard: http://127.0.0.1:{port}\nMCP: http://127.0.0.1:{port}/mcp")
+        typer.echo(f"Vision model: {os.getenv('OPENAI_MODEL', 'gpt-6-luna')} (real inference; API usage applies)")
         typer.echo(f"DJI publish URL: rtmp://{lan_ip()}:1935/live/drone\nSource: {source}")
-        application = create_app(data, port=port, source=source, stub=stub, autostart=autostart)
+        application = create_app(data, port=port, source=source, stub=False, autostart=autostart)
         server = uvicorn.Server(uvicorn.Config(application, host="127.0.0.1", port=port,
                                               log_level="warning", timeout_graceful_shutdown=3))
         # Supervise MediaMTX without terminating processes owned by other applications.

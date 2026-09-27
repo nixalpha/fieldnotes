@@ -19,6 +19,7 @@ from .ingest import Decoder
 from .mcp_server import make_mcp
 from .model import VisionModel
 from .memory import Memory
+from .sessions import Sessions
 from .memory_api import router as memory_router
 
 STATIC = Path(__file__).parent / "static"
@@ -44,6 +45,8 @@ class SummarySettings(BaseModel):
 def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = "drone",
                stub: bool = False, autostart: bool = False, ingest: bool = True,
                rtmp_url: str = "rtmp://127.0.0.1:1935/live/drone", archive: bool = False, model_root: Path | None = None) -> FastAPI:
+    if stub and not archive:
+        raise ValueError("Live mode requires real vision. Stub interpretations are restricted to saved mock archives.")
     runtime = Runtime(data_dir or Path(os.getenv("FIELDNOTES_DATA_DIR", "data")), source)
     if archive:
         from .memory_replay import ArchiveRuntime
@@ -51,10 +54,17 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
         runtime = ArchiveRuntime(data_dir)
     memory = Memory(runtime, model_root=model_root, archive=archive, mock=stub or archive)
     runtime.memory = memory
+    runtime.sessions = Sessions(runtime, memory.store, archive=archive)
     mcp = make_mcp(runtime)
     mcp_app = mcp.streamable_http_app()
     agent = Agent(runtime, f"http://127.0.0.1:{port}/mcp", VisionModel(stub or archive))
     agent.autostart = autostart
+    def session_ended(session, reason):
+        try:
+            agent.session_ended(session, reason)
+        finally:
+            memory.end_session(session['session_id'], reason)
+    runtime.sessions.on_end = session_ended
     decoder = Decoder(runtime, rtmp_url)
     publish_url = f"rtmp://{lan_ip()}:1935/live/drone"
 
@@ -62,16 +72,21 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     async def lifespan(app):
         async with mcp.session_manager.run():
             decoder_task = asyncio.create_task(decoder.run()) if ingest and not archive else None
+            watchdog = asyncio.create_task(runtime.sessions.watch()) if not archive else None
             if not archive: agent.launch()
             memory.launch()
             try:
                 yield
             finally:
-                await agent.close()
-                await memory.close()
+                if watchdog:
+                    watchdog.cancel()
+                    await asyncio.gather(watchdog, return_exceptions=True)
                 if decoder_task:
                     decoder_task.cancel()
                     await asyncio.gather(decoder_task, return_exceptions=True)
+                runtime.sessions.shutdown()
+                await agent.close()
+                await memory.close()
                 runtime.journal.close()
 
     app = FastAPI(title="FieldNotes", lifespan=lifespan)
@@ -98,6 +113,13 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     async def status():
         return {"stream": runtime.status(), "agent": agent.status(), "publish_url": publish_url}
 
+    @app.get("/api/sessions")
+    async def sessions(limit: int = 50, cursor: str | None = None):
+        try:
+            return runtime.sessions.list(limit, cursor)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     @app.get("/api/config")
     async def config():
         return {"brief": agent.brief, "interval_seconds": agent.interval_seconds, "publish_url": publish_url}
@@ -117,10 +139,10 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
         return agent.status()
 
     @app.get("/api/journal")
-    async def journal(after: int = 0, limit: int = 200):
+    async def journal(after: int = 0, limit: int = 200, session_id: str | None = None):
         if after < 0 or not 1 <= limit <= 1000:
             raise HTTPException(422, "Invalid journal cursor or limit")
-        return {"entries": runtime.journal.list(limit, after)}
+        return {"entries": runtime.journal.list(limit, after, session_id)}
 
     @app.get("/api/export")
     async def export():
@@ -153,6 +175,8 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
                     try:
                         frame = await asyncio.wait_for(queue.get(), 1)
                     except TimeoutError:
+                        continue
+                    if frame.session_id != runtime.session_id:
                         continue
                     yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
                            + str(len(frame.jpeg)).encode() + b"\r\n\r\n" + frame.jpeg + b"\r\n")

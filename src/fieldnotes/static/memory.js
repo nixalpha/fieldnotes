@@ -3,29 +3,80 @@
   const node=(tag,value,cls)=>{const n=document.createElement(tag);n.textContent=value;if(cls)n.className=cls;return n;};
   const imageURL=asset=>'/api/memory/asset/'+asset.split('/').map(encodeURIComponent).join('/');
   let frames=[], selected=null, points=[], labels=[], currentSession='', lastStatus=null, selectedTrack=null;
-  let sequence=0;
+  let sequence=0, followLive=true, refreshing=false, sessionCursor, liveHint;
+  const sessionCache=new Map();
   async function request(path,body){const r=await fetch('/api/memory'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw Error(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail));return j;}
   function error(e){el('memory-error').textContent=e?.message||'';el('memory-error').hidden=!e;}
   function sourceLink(id){const [session,frame]=id.split(':');const a=node('a','Frame '+frame);a.href='/api/evidence/'+encodeURIComponent(session)+'/'+Number(frame)+'.jpg';a.target='_blank';a.rel='noopener';return a;}
   function originals(ids){const row=node('div','','memory-thumbs');for(const id of ids){const a=sourceLink(id);const img=new Image();img.src=a.href;img.alt='Original '+id;img.loading='lazy';a.prepend(img);row.append(a);}return row;}
-  async function refresh(){
-    const s=await request('/status');lastStatus=s;
-    el('memory-mode').textContent=s.interpretation_source==='mock'?'MOCK INTERPRETATIONS':'FALLIBLE INTERPRETATIONS';
-    el('memory-status').textContent=`${s.evidence_count} retained images · ${s.indexed_count} indexed · ${s.index_backlog} pending · search ${s.models.clip_device||'not loaded'} · tracking ${s.models.edge_device||s.models.edgetam.configured_device+' (on demand)'}`;
-    if(s.worker_error)error(Error(s.worker_error));
-    const select=el('memory-session');const old=select.value;
-    select.replaceChildren(...s.sessions.map(x=>{const o=node('option',`${x.session_id.slice(0,8)} · ${x.frame_count} images`);o.value=x.session_id;return o;}));
-    if([...select.options].some(o=>o.value===old))select.value=old;
-    if(select.value && currentSession!==select.value)await loadSession();
-    drawTracks(s.tracks);
+  function sessionLabel(s){
+    const when=s.started_at||s.created_at;
+    const until=s.last_received_at||s.observed_until_at;
+    return `${s.name||s.session_id.slice(0,8)} · ${s.state} · ${when?new Date(when).toLocaleString():'time unknown'}${until?' – '+new Date(until).toLocaleTimeString():''} · ${s.frame_count} images`;
   }
-  async function loadSession(){
-    currentSession=el('memory-session').value;
-    if(!currentSession)return;
-    frames=(await request('/frames?session_id='+encodeURIComponent(currentSession)+'&limit=1000')).frames;
-    el('memory-time').max=Math.max(0,frames.length-1);el('memory-time').value=frames.length-1;
+  function renderSessions(){
+    const select=el('memory-session'), old=select.value;
+    const sessions=[...sessionCache.values()].sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+    select.replaceChildren(...sessions.map(s=>{const o=node('option',sessionLabel(s));o.value=s.session_id;return o;}));
+    if(sessionCache.has(old))select.value=old;
+    el('memory-more-sessions').hidden=!sessionCursor;
+  }
+  async function refresh(){
+    if(refreshing)return;
+    refreshing=true;
+    try{
+      const s=await request('/status');lastStatus=s;
+      el('memory-mode').textContent=s.interpretation_source==='mock'?'MOCK INTERPRETATIONS':'FALLIBLE INTERPRETATIONS';
+      el('memory-status').textContent=`${s.evidence_count} retained images · ${s.indexed_count} indexed · ${s.index_backlog} pending · search ${s.models.clip_device||'not loaded'} · tracking ${s.models.edge_device||s.models.edgetam.configured_device+' (on demand)'}`;
+      if(s.worker_error)error(Error(s.worker_error));
+      const oldCount=sessionCache.get(currentSession)?.frame_count;
+      s.sessions.forEach(row=>sessionCache.set(row.session_id,row));
+      if(sessionCursor===undefined)sessionCursor=s.sessions_next_cursor;
+      renderSessions();
+      const select=el('memory-session');
+      if(followLive&&s.active_session_id&&sessionCache.has(s.active_session_id))select.value=s.active_session_id;
+      el('memory-follow').disabled=s.archive||followLive;
+      el('memory-follow').textContent=followLive&&!s.archive?'Following live session':'Follow live session';
+      if(select.value!==currentSession)await loadSession();
+      else if(followLive && oldCount!==sessionCache.get(currentSession)?.frame_count)await loadSession(true);
+      describeSession();
+      drawTracks(s.tracks);
+    }finally{refreshing=false;}
+  }
+  function describeSession(){
+    const s=sessionCache.get(currentSession);
+    el('memory-session-state').textContent=s?`${sessionLabel(s)}${s.end_reason?' · '+s.end_reason.replaceAll('_',' '):''}${s.boundaries_inferred?' · historical boundaries inferred':''}`:'No recording sessions yet. The first video frame starts one.';
+  }
+  async function loadSession(keepSelection=false){
+    const target=el('memory-session').value, previous=currentSession;
+    const oldSelected=keepSelection&&selected?.id;
+    const wasLatest=selected&&frames.length&&selected.id===frames[frames.length-1].id;
+    currentSession=target;
+    ++sequence;
+    window.dispatchEvent(new CustomEvent('fieldnotes-session-selected',{detail:{session_id:currentSession}}));
+    if(previous!==target){selectedTrack=null;el('track-inspection')?.remove();}
+    if(!target){clearSelection();describeSession();return;}
+    const response=await request('/frames?session_id='+encodeURIComponent(target)+'&limit=1000');
+    if(currentSession!==target)return;
+    frames=response.frames;
+    el('memory-time').max=Math.max(0,frames.length-1);
+    el('memory-time').disabled=!frames.length;
     el('memory-results').replaceChildren();
-    if(frames.length)await choose(frames[frames.length-1]);
+    if(frames.length){
+      const kept=oldSelected&&!wasLatest?frames.find(f=>f.id===oldSelected):null;
+      await choose(kept||frames[frames.length-1]);
+    }else clearSelection();
+    describeSession();
+    if(lastStatus)drawTracks(lastStatus.tracks);
+  }
+  function clearSelection(){
+    ++sequence;frames=[];selected=null;points=[];labels=[];selectedTrack=null;
+    el('memory-original').removeAttribute('src');
+    el('memory-time').disabled=true;el('memory-time').value=0;
+    el('memory-time-label').textContent='No retained images';
+    el('memory-source').textContent='Waiting for retained evidence in this session.';
+    for(const id of ['memory-state','memory-changes','memory-results'])el(id).replaceChildren();
+    el('track-inspection')?.remove();drawPoints();
   }
   function drawPoints(){const c=el('memory-points'),im=el('memory-original');c.width=im.clientWidth;c.height=im.clientHeight;const ctx=c.getContext('2d');if(!selected)return;points.forEach((p,i)=>{ctx.beginPath();ctx.arc(p[0]/selected.width*c.width,p[1]/selected.height*c.height,6,0,Math.PI*2);ctx.fillStyle=labels[i]?'#37e5b3':'#ff806e';ctx.fill();ctx.strokeStyle='#111';ctx.stroke();});}
   async function choose(frame){
@@ -73,9 +124,12 @@
   el('track-clear').onclick=()=>{points=[];labels=[];drawPoints();};
   async function start(preview){try{error(null);if(!selected||!points.length)throw Error('Select a source image and click a region first.');const t=await request('/tracks',{evidence_id:selected.id,points,labels,label:el('track-label').value.trim(),preview_only:preview});selectedTrack=t.id;await refresh();}catch(e){error(e);}}
   el('track-preview').onclick=()=>start(true);el('track-start').onclick=()=>start(false);
-  el('memory-session').onchange=()=>loadSession().catch(error);
-  el('memory-time').oninput=()=>choose(frames[Number(el('memory-time').value)]).catch(error);
+  el('memory-session').onchange=()=>{followLive=false;el('memory-follow').disabled=!!lastStatus?.archive;el('memory-follow').textContent='Follow live session';loadSession().catch(error);};
+  el('memory-follow').onclick=()=>{followLive=true;refresh().catch(error);};
+  el('memory-more-sessions').onclick=async()=>{try{const r=await fetch('/api/sessions?limit=200&cursor='+encodeURIComponent(sessionCursor));const page=await r.json();if(!r.ok)throw Error(page.detail);page.sessions.forEach(s=>sessionCache.set(s.session_id,s));sessionCursor=page.next_cursor;renderSessions();}catch(e){error(e);}};
+  window.addEventListener('fieldnotes-stream-status',e=>{const sid=e.detail.active_session_id;if(sid!==liveHint){liveHint=sid;refresh().catch(error);}});
+  el('memory-time').oninput=()=>{const f=frames[Number(el('memory-time').value)];if(f)choose(f).catch(error);};
   el('memory-refresh').onclick=async()=>{try{await refresh();await loadSession();}catch(e){error(e);}};
-  el('memory-search').onsubmit=async e=>{e.preventDefault();const button=e.currentTarget.querySelector('button');button.disabled=true;button.textContent='Searching…';try{error(null);const result=await request('/search',{query:el('memory-query').value,session_id:currentSession});el('memory-results').replaceChildren(...result.results.map(r=>{const b=node('button',`Frame ${r.evidence.frame_id} · similarity ${r.similarity.toFixed(3)}`);b.type='button';const im=new Image();im.src=imageURL(r.evidence.asset);im.alt='Search candidate '+r.evidence.frame_id;b.prepend(im);b.onclick=()=>choose(r.evidence).catch(error);return b;}));if(!result.results.length)el('memory-results').append(node('p','No indexed candidates in this session.'));}catch(e){error(e);}finally{button.disabled=false;button.textContent='Search images';}};
+  el('memory-search').onsubmit=async e=>{e.preventDefault();const button=e.currentTarget.querySelector('button');button.disabled=true;button.textContent='Searching…';try{error(null);const searchedSession=currentSession;const result=await request('/search',{query:el('memory-query').value,session_id:searchedSession});if(searchedSession!==currentSession)return;el('memory-results').replaceChildren(...result.results.map(r=>{const b=node('button',`Frame ${r.evidence.frame_id} · similarity ${r.similarity.toFixed(3)}`);b.type='button';const im=new Image();im.src=imageURL(r.evidence.asset);im.alt='Search candidate '+r.evidence.frame_id;b.prepend(im);b.onclick=()=>choose(r.evidence).catch(error);return b;}));if(!result.results.length)el('memory-results').append(node('p','No indexed candidates in this session.'));}catch(e){error(e);}finally{button.disabled=false;button.textContent='Search images';}};
   refresh().catch(error);setInterval(()=>refresh().catch(error),5000);
 })();

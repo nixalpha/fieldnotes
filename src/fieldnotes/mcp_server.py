@@ -25,18 +25,41 @@ def make_mcp(runtime: Runtime) -> FastMCP:
     memory = getattr(runtime, "memory", None)
 
     @server.tool()
+    async def list_sessions(limit: int = 50, cursor: str | None = None) -> dict:
+        """List recording sessions, including historical and waiting-for-video sessions."""
+        return runtime.sessions.list(limit, cursor)
+
+    @server.tool()
+    async def start_session(request_id: str, name: str | None = None,
+                            expected_active_session_id: str | None = None) -> dict:
+        """Create a recording session. Supply the current active ID to rotate it.
+
+        request_id is an idempotency key. Without video the session waits for its
+        first frame. Archive servers reject lifecycle mutations.
+        """
+        return runtime.sessions.start(request_id, name, expected_active_session_id)
+
+    @server.tool()
+    async def end_session(session_id: str, request_id: str, reason: str | None = None) -> dict:
+        """End exactly this recording session. The next decoded frame starts another.
+
+        Retrying request_id is idempotent. An already-ended ID never ends a replacement.
+        """
+        return runtime.sessions.end(session_id, request_id, reason)
+
+    @server.tool()
     def get_stream_status() -> dict:
         """Read stream freshness and buffer coverage. Timestamps describe local receipt."""
         return runtime.status()
 
     @server.tool(structured_output=False)
-    def get_observation_window(start_elapsed_ms: int, end_elapsed_ms: int) -> list:
+    async def get_observation_window(start_elapsed_ms: int, end_elapsed_ms: int, session_id: str | None = None) -> list:
         """Get up to five JPEG images from a completed half-open window (at most 60s).
 
         The first content block is JSON metadata. Following image blocks match frames in order.
         Evidence is persisted. Empty/partial coverage is explicit; no unseen action is implied.
         """
-        observation = runtime.observe(start_elapsed_ms, end_elapsed_ms)
+        observation = runtime.observe(start_elapsed_ms, end_elapsed_ms, session_id)
         if memory and observation["frames"]:
             frames = memory.ingest_observation(observation)
             bundle = memory.store.bundle([f["id"] for f in frames])
@@ -48,11 +71,14 @@ def make_mcp(runtime: Runtime) -> FastMCP:
         ]]
 
     @server.tool()
-    def get_recent_summaries(limit: int = 3) -> dict:
+    async def get_recent_summaries(limit: int = 3, session_id: str | None = None) -> dict:
         """Read recent completed summaries in this session as prior interpretations, not ground truth."""
         if not 1 <= limit <= 20:
             raise ValueError("limit must be between 1 and 20")
-        entries = runtime.journal.list(1000, session_id=runtime.session_id)
+        sid = session_id or runtime.session_id
+        if sid is None:
+            return {"summaries": []}
+        entries = runtime.journal.list(1000, session_id=sid)
         return {"summaries": [e for e in entries if e["status"] == "completed"][-limit:]}
 
     @server.tool()
