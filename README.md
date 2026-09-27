@@ -193,3 +193,11 @@ The default page is now **Sessions**, with **Live** in the top navigation and a 
 Session accounts are synthesized from retained observations using the configured model after session end, or via **Generate overview** in review. This adds model usage; merely opening a historical session does not trigger generation. Image search and tracking remain available through the backend and MCP, but are removed from the UI.
 
 See [portal routes, synthesis behavior, APIs, assets, and verification status](docs/portal.md). This overhaul has **not been verified**, per request; no tests, builds, browser checks or application restarts were run.
+
+## Jobs
+
+Use **Jobs** to group observation sessions under a configurable general theme. Select a job for the **next** session; existing sessions retain their original captured theme. Assign Untracked observations to a job without rewriting their evidence or LLM context. Themes supplement the task-specific observation brief.
+
+MCP provides `create_job`, `list_jobs`, `get_job`, `update_job`, `get_job_context`, `switch_job`, and `assign_observations_to_job`. Existing session listing supports job and Untracked filters. See [Jobs behavior, MCP examples, HTTP routes, storage, and unexecuted coverage](docs/jobs.md).
+
+The server must be restarted to load the new routes and tools. Implementation has not been verified, and no restart was performed.

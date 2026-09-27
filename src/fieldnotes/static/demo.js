@@ -26,7 +26,7 @@ export function demoReview(id) {
     received_at: new Date(Date.parse(start) + elapsed_ms).toISOString(), source:'demo', width: 1200, height:900,
     url: asset(lounge ? elapsed_ms < 660000 ? 'lounge-seated' : elapsed_ms < 700000 ? 'lounge-standing' : 'lounge-empty' : session.image),
   }));
-  return {session: {...session, title: session.display_name || (lounge ? 'Workspace observation.' : session.title), started_at:start,
+  return {session: {...demoDecorate(session), title: session.display_name || (lounge ? 'Workspace observation.' : session.title), started_at:start,
     last_received_at: new Date(Date.parse(start)+790000).toISOString(), location: lounge ? 'Lounge' : ''}, frames,
     coverage:[{start_ms:735000, end_ms:785000, label:'Unsaved interval'}],
     account:{state:'ready', version:1, generation_allowed:false, model:'Authored demonstration',
@@ -58,4 +58,41 @@ export function demoActivity() {
     {title:'Main passage clear',text:'The pathway between the lounge and entry remains clear.',time:at(10,12),image:asset('lounge-empty'),frame:183,session:id},
     {title:'Could not confirm',text:'Unable to confirm whether the task was completed outside the seating view.',time:at(10,11),image:asset('lounge-empty'),frame:210,session:id,uncertain:true},
   ];
+}
+
+// Job organization is deliberately memory-only and never calls the real service.
+const demoJobs = [
+  {job_id:'demo-job-workspace',name:'Workspace readiness',theme:'Observe how work areas are prepared and used. Note equipment placement, visible activity, and access conditions without inferring task completion.',revision:1,created_at:at(8,0),updated_at:at(8,0)},
+  {job_id:'demo-job-equipment',name:'Equipment inspection',theme:'Observe the location and visible condition of tools and equipment, including changes and areas that cannot be inspected from the camera view.',revision:1,created_at:at(8,10),updated_at:at(8,10)},
+];
+const demoMemberships = new Map([['demo-workspace','demo-job-workspace'],['demo-toolwall','demo-job-workspace'],['demo-receiving','demo-job-equipment'],['demo-storage','demo-job-equipment']].map(([sid,jid])=>[sid,{job_id:jid,kind:'captured',assigned_at:at(8,0)}]));
+const demoCaptured = new Map([...demoMemberships].map(([sid,m])=>{const j=demoJobs.find(j=>j.job_id===m.job_id);return[sid,{job_id:j.job_id,name:j.name,theme:j.theme,revision:j.revision}];}));
+let demoSelectedJob = 'demo-job-workspace', demoSelectionRevision = 1;
+const demoJobRequests = new Map();
+function getDemoJob(id){const j=demoJobs.find(j=>j.job_id===id);if(!j)throw Error('unknown_job: This demo job does not exist.');return{...j,observation_count:[...demoMemberships.values()].filter(m=>m.job_id===id).length,selected:demoSelectedJob===id};}
+export function demoDecorate(session){const m=demoMemberships.get(session.session_id);return{...session,job_id:m?.job_id||null,job:m?getDemoJob(m.job_id):null,job_context:demoCaptured.get(session.session_id)||null,job_assignment:m?{kind:m.kind,assigned_at:m.assigned_at}:null};}
+export function demoJobContext(){return{selected_job_id:demoSelectedJob,selected_job:demoSelectedJob?getDemoJob(demoSelectedJob):null,selection_revision:demoSelectionRevision,selection_allowed:true,current_session:demoDecorate(demoSessions.find(s=>s.session_id==='demo-lounge'))};}
+export async function demoJobsRequest(path,body){
+  const url=new URL(path,location.origin),parts=url.pathname.split('/').filter(Boolean).slice(2),id=parts[0];
+  if(body===undefined){
+    if(id==='context')return demoJobContext();
+    if(id)return getDemoJob(id);
+    return{jobs:demoJobs.map(j=>getDemoJob(j.job_id)),next_cursor:null,...demoJobContext()};
+  }
+  const signature=JSON.stringify({path,body}),old=demoJobRequests.get(body.request_id);if(old){if(old.signature!==signature)throw Error('request_conflict: Request already used.');return structuredClone(old.result);}
+  let result;
+  if(!id){const name=body.name.trim(),theme=body.theme.trim();if(!name||name.length>120||!theme||theme.length>4000)throw Error('Enter a name and theme within the allowed limits.');const j={job_id:'demo-job-'+crypto.randomUUID(),name,theme,revision:1,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};demoJobs.unshift(j);result={job:getDemoJob(j.job_id)};}
+  else if(id==='selection'){
+    if(body.expected_selection_revision!==demoSelectionRevision)throw Error('stale_selection: Selection changed. Reload and try again.');
+    if(body.job_id)getDemoJob(body.job_id);if(demoSelectedJob!==body.job_id){demoSelectedJob=body.job_id;demoSelectionRevision++;}result={...demoJobContext(),effective:'next_session'};
+  }else if(parts[1]==='observations'){
+    getDemoJob(id);const ids=[...new Set(body.session_ids)];if(!ids.length||ids.length>100)throw Error('Choose 1–100 observations.');
+    for(const sid of ids){if(!demoSessions.some(s=>s.session_id===sid))throw Error('Unknown observation.');if(demoMemberships.has(sid)&&demoMemberships.get(sid).job_id!==id)throw Error('Observation already belongs to another job.');}
+    ids.forEach(sid=>{if(!demoMemberships.has(sid))demoMemberships.set(sid,{job_id:id,kind:'assigned',assigned_at:new Date().toISOString()});});result={job:getDemoJob(id),capture_context_unchanged:true};
+  }else{
+    const job=demoJobs.find(j=>j.job_id===id);getDemoJob(id);if(job.revision!==body.expected_revision)throw Error('stale_revision: Job changed. Reload and try again.');
+    const name=(body.name??job.name).trim(),theme=(body.theme??job.theme).trim();if(!name||name.length>120||!theme||theme.length>4000)throw Error('Enter a name and theme within the allowed limits.');
+    if(name!==job.name||theme!==job.theme)Object.assign(job,{name,theme,revision:job.revision+1,updated_at:new Date().toISOString()});result={job:getDemoJob(id)};
+  }
+  demoJobRequests.set(body.request_id,{signature,result:structuredClone(result)});return result;
 }

@@ -25,9 +25,10 @@ def make_mcp(runtime: Runtime) -> FastMCP:
     memory = getattr(runtime, "memory", None)
 
     @server.tool()
-    async def list_sessions(limit: int = 50, cursor: str | None = None) -> dict:
+    async def list_sessions(limit: int = 50, cursor: str | None = None,
+                            job_id: str | None = None, untracked_only: bool = False) -> dict:
         """List recording sessions, including historical and waiting-for-video sessions."""
-        return runtime.sessions.list(limit, cursor)
+        return runtime.sessions.list(limit, cursor, job_id, untracked_only)
 
     @server.tool()
     async def start_session(request_id: str, name: str | None = None,
@@ -95,9 +96,57 @@ def make_mcp(runtime: Runtime) -> FastMCP:
         runtime.revision += 1
         return entry
 
+    if getattr(runtime, 'jobs', None):
+        register_job_tools(server, runtime.jobs)
     if memory:
         register_memory_tools(server, memory)
     return server
+
+
+def register_job_tools(server, jobs):
+    @server.tool()
+    def create_job(request_id: str, name: str, theme: str) -> dict:
+        """Create a named job and theme. Does not select it or invoke a model. Idempotent by request_id."""
+        return jobs.create(request_id, name, theme)
+
+    @server.tool()
+    def list_jobs(limit: int = 50, cursor: str | None = None) -> dict:
+        """List jobs with observation counts and the selection for future sessions."""
+        return jobs.list(limit, cursor)
+
+    @server.tool()
+    def get_job(job_id: str) -> dict:
+        """Read a job's name, theme, current revision, timestamps and observation count."""
+        return jobs.get(job_id)
+
+    @server.tool()
+    def update_job(request_id: str, job_id: str, expected_revision: int,
+                   name: str | None = None, theme: str | None = None) -> dict:
+        """Update job configuration with revision protection. Existing capture contexts never change."""
+        return jobs.update(request_id, job_id, expected_revision, name, theme)
+
+    @server.tool()
+    def get_job_context() -> dict:
+        """Read next-session selection and current-session membership and immutable capture context."""
+        return jobs.context()
+
+    @server.tool()
+    def switch_job(request_id: str, job_id: str | None, expected_selection_revision: int) -> dict:
+        """Select a job for NEW sessions only; null selects Untracked. Current recording is unchanged.
+
+        Read get_job_context first and supply its selection_revision. This does not start,
+        end, rotate or reassign a session and does not change an ongoing observation's theme.
+        """
+        return jobs.switch(request_id, job_id, expected_selection_revision)
+
+    @server.tool()
+    def assign_observations_to_job(request_id: str, job_id: str, session_ids: list[str]) -> dict:
+        """Atomically assign 1–100 Untracked observation sessions to a job, including active sessions.
+
+        Same-job membership is a no-op. Any other membership rejects the whole batch.
+        Original LLM context, summaries and evidence remain unchanged; no model calls occur.
+        """
+        return jobs.assign(request_id, job_id, session_ids)
 
 
 def image_blocks(metadata, images):

@@ -20,6 +20,8 @@ from .mcp_server import make_mcp
 from .model import VisionModel
 from .memory import Memory
 from .sessions import Sessions
+from .jobs import Jobs
+from .jobs_api import router as jobs_router
 from .portal import Portal, router as portal_router
 from .memory_api import router as memory_router
 
@@ -56,6 +58,7 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     memory = Memory(runtime, model_root=model_root, archive=archive, mock=stub or archive)
     runtime.memory = memory
     runtime.sessions = Sessions(runtime, memory.store, archive=archive)
+    runtime.jobs = Jobs(runtime, memory.store, archive=archive)
     mcp = make_mcp(runtime)
     mcp_app = mcp.streamable_http_app()
     agent = Agent(runtime, f"http://127.0.0.1:{port}/mcp", VisionModel(stub or archive))
@@ -98,6 +101,7 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     app.state.memory = memory
     app.include_router(memory_router(memory))
     app.include_router(portal_router(portal))
+    app.include_router(jobs_router(runtime.jobs))
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -119,9 +123,9 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
         return {"stream": runtime.status(), "agent": agent.status(), "publish_url": publish_url}
 
     @app.get("/api/sessions")
-    async def sessions(limit: int = 50, cursor: str | None = None):
+    async def sessions(limit: int = 50, cursor: str | None = None, job_id: str | None = None, untracked_only: bool = False):
         try:
-            return runtime.sessions.list(limit, cursor)
+            return runtime.sessions.list(limit, cursor, job_id, untracked_only)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 

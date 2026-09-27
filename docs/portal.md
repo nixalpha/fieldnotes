@@ -53,3 +53,7 @@ Open a session and choose **Rename** beside its title. Save a name of 1–100 ch
 `POST /api/sessions/{session_id}/rename` accepts `{"name":"Workspace observation"}` and returns the updated session record with its display title. Invalid names return 422; an unknown session returns 404. Original observations and evidence remain unchanged. No verification was run for this addition.
 
 Rename requests preserve the entered name on failure and handle non-JSON error responses. If the server predates the rename endpoint, the UI asks for a FieldNotes server restart; refreshing the browser alone does not load new Python routes.
+
+## Jobs
+
+The portal now includes a Jobs library and job detail pages (`/#/jobs`, `/#/jobs/<job_id>`), membership filters in Sessions, assignment in review, and current-versus-next job context in Live. Jobs group whole observation sessions. See [Jobs](jobs.md) for capture semantics and the shared REST/MCP service. Demo jobs are isolated browser fixtures.

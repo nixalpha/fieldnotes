@@ -28,7 +28,7 @@ class ArchiveRuntime(Runtime):
     def elapsed_ms(self): return self.last_frame_ms+1
 
     def status(self):
-        return {'active_session_id':None,'session_state':'ended','automatic_start':False,
+        return {'jobs':self.jobs.context() if self.jobs else None,'active_session_id':None,'session_state':'ended','automatic_start':False,
                 'session_id':self.session_id,'source':'replay','state':'archive','elapsed_ms':self.elapsed_ms(),
                 'first_frame_ms':self.first_frame_ms,'stream_epoch':self.epoch,'latest_frame_age_ms':None,
                 'dimensions':self.last_dimensions,'input_kind':'sampled_evidence','decoder_error':None}
@@ -40,7 +40,7 @@ class ArchiveRuntime(Runtime):
             raise ValueError('Window must be positive, at most 60 seconds and within saved history')
         oid=f'{self.session_id}-{start}-{end}'
         old=self.journal.observation(oid)
-        if old: return old
+        if old: return {**old,'job_context':old.get('job_context')}
         available=[f for f in self.saved if start<=f['elapsed_ms']<end]
         selected={}
         if available:
@@ -50,7 +50,7 @@ class ArchiveRuntime(Runtime):
                 selected[frame['frame_id']]=frame
         metas=sorted(selected.values(),key=lambda f:f['elapsed_ms'])
         frames=[Frame(**meta,jpeg=(self.journal.directory/'evidence'/self.session_id/f"{meta['frame_id']}.jpg").read_bytes()) for meta in metas]
-        observation={'observation_id':oid,'session_id':self.session_id,'source':'replay','input_kind':'sampled_evidence',
+        observation={'job_context':None,'observation_id':oid,'session_id':self.session_id,'source':'replay','input_kind':'sampled_evidence',
             'source_session_id':self.manifest['source_session_id'],'start_elapsed_ms':start,'end_elapsed_ms':end,
             'start_at':(self.started_utc+timedelta(milliseconds=start)).isoformat(),
             'end_at':(self.started_utc+timedelta(milliseconds=end)).isoformat(),

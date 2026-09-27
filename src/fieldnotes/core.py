@@ -189,6 +189,7 @@ class Runtime:
         self.started_utc = datetime.now(UTC)
         self.session_id = None
         self.sessions = None
+        self.jobs = None
         self.source = source
         self.buffer = FrameBuffer()
         self.journal = Journal(directory)
@@ -250,7 +251,7 @@ class Runtime:
         oid = f"{sid}-{start}-{end}"
         existing = self.journal.observation(oid)
         if existing:
-            return existing
+            return {**existing, "job_context": existing.get("job_context")}
         if sid != self.session_id:
             raise ValueError("Historical window is not retained; retrieve saved evidence instead")
         if end > self.elapsed_ms() + 10:
@@ -264,6 +265,7 @@ class Runtime:
         observation = {"observation_id": oid, "session_id": self.session_id, "source": self.source,
                        "start_elapsed_ms": start, "end_elapsed_ms": end,
                        "brief": getattr(self, "observation_brief", None),
+                       "job_context": self.sessions.current.get("job_context") if self.sessions and self.sessions.current else None,
                        "start_at": (self.started_utc + timedelta(milliseconds=start)).isoformat(),
                        "end_at": (self.started_utc + timedelta(milliseconds=end)).isoformat(),
                        "coverage": "empty" if not frames else "partial" if gaps else "complete",
