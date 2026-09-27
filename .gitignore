@@ -1,0 +1,14 @@
+.venv/
+.env
+.env.*
+!.env.example
+data/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.DS_Store
+
+# MediaMTX versions with auto-TLS defaults (unused by our RTMP-only config)
+auto.key
+auto.crt

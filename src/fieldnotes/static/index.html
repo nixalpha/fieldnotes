@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FieldNotes · Work, observed.</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<header><a class="brand" href="/">◉ FieldNotes</a><span class="tagline">WORK, OBSERVED.</span><a class="export" href="/api/export">Export journal ↗</a></header>
+<main>
+<section class="heading"><div><p class="eyebrow">YOUR EYES IN THE FIELD</p><h1>A record of work<br>as it happens.</h1><p class="intro">Live perspective. Timestamped observations. Evidence you can revisit.</p></div><div class="session"><span id="source">DRONE</span><span id="connection" role="status">Connecting…</span><small id="session-id"></small></div></section>
+<div class="workspace">
+<section class="observation">
+<div class="panel preview-panel"><div class="panel-title"><h2>Live view</h2><span id="freshness">Waiting for video</span></div><div class="video"><img id="preview" src="/api/preview" alt="Live drone camera feed"><div id="video-placeholder">Awaiting your perspective<span>Publish the DJI stream to the address below.</span></div><span id="video-label">DRONE FEED</span></div><div class="address"><span>RTMP PUBLISH ADDRESS</span><code id="publish">Loading…</code><button id="copy" type="button">Copy</button></div></div>
+<div class="panel controls"><div class="panel-title"><h2>Observation brief</h2><span id="model">Checking model…</span></div><form id="settings"><label for="brief">What work should the observer describe?</label><textarea id="brief" rows="3" maxlength="4000" required>Describe the visible physical work, including placing and moving cones.</textarea><div class="controls-row"><label for="interval">Observe every <input id="interval" type="number" value="5" min="1" max="60" step="1" required> seconds</label><button id="pause" type="button" class="secondary">Pause</button><button id="start" type="submit">Start observing</button></div></form><p id="agent-status" role="status">Preparing observer…</p><p id="error" role="alert" hidden></p><p class="footnote">Intervals use local video receipt time. Summaries arrive after analysis; they may lag the live feed. Pausing lets the current analysis finish.</p></div>
+</section>
+<section class="panel journal"><div class="panel-title"><div><p class="eyebrow">THE WORK JOURNAL</p><h2>What happened</h2></div><span id="count">0 entries</span></div><div id="entries"><div class="empty"><span>↳</span><h3>The story starts here.</h3><p>Connect your video and start observing.<br>Each note will include its visual evidence.</p></div></div></section>
+</div><footer>FieldNotes / Prototype<span>Camera observations, not inferred intent. Flight remains with the operator.</span></footer>
+</main><script src="/static/app.js" defer></script>
+</body></html>

@@ -1,0 +1,16 @@
+logLevel: info
+rtmp: yes
+rtmpAddress: :1935
+rtsp: no
+hls: no
+webrtc: no
+srt: no
+moq: no
+playback: no
+pprof: no
+api: no
+metrics: no
+paths:
+  live/drone:
+    source: publisher
+    overridePublisher: no
