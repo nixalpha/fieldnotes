@@ -1,4 +1,5 @@
 import {demoSessions, demoReview, demoState, demoActivity, demoJobsRequest, demoDecorate, demoJobContext} from './demo.js';
+import {configureStatistics, renderStatistics, statisticsHash, stopStatistics} from './statistics.js';
 
 const $ = id => document.getElementById(id);
 const node = (tag, value = '', cls = '') => { const n = document.createElement(tag); if (value) n.textContent = value; if (cls) n.className = cls; return n; };
@@ -59,7 +60,7 @@ $('demo-switch').onclick = () => setDemo(!demo); $('exit-demo').onclick = () => 
 if (demo) filters.range = '2';
 function shell() {
   $('demo-banner').hidden = !demo; $('demo-switch').textContent = demo ? 'Exit demo' : 'Explore demo';
-  document.querySelectorAll('[data-nav]').forEach(a => { if ((route === 'live' ? 'live' : ['jobs','job'].includes(route)?'jobs':'sessions') === a.dataset.nav) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
+  document.querySelectorAll('[data-nav]').forEach(a => { if ((route === 'live' ? 'live' : ['jobs','job','statistics'].includes(route)?'jobs':'sessions') === a.dataset.nav) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
   connection();
 }
 function connection(disconnected = false) {
@@ -94,10 +95,11 @@ async function renderRoute() {
   review = null; frames = []; selected = null; frameCursor = null; frameTask=null; frameLoading=false;
   const hash = location.hash.slice(1) || '/sessions';
   const [path, query] = hash.split('?'); const parts = path.split('/').filter(Boolean);
-  route = parts[0] === 'jobs' ? (parts[1]?'job':'jobs') : parts[0] === 'live' ? 'live' : parts[0] === 'sessions' && parts[1] ? 'review' : 'sessions';
-  shell(); $('content').replaceChildren();
+  route = parts[0] === 'jobs' ? (parts[1]?(parts[2]==='statistics'?'statistics':'job'):'jobs') : parts[0] === 'live' ? 'live' : parts[0] === 'sessions' && parts[1] ? 'review' : 'sessions';
+  stopStatistics(); shell(); $('content').replaceChildren();
   if (route === 'jobs') renderJobs();
   else if (route === 'job') renderJob(decodeURIComponent(parts[1]));
+  else if (route === 'statistics') renderStatistics(decodeURIComponent(parts[1]));
   else if (route === 'sessions') renderLibrary();
   else if (route === 'live') renderLive();
   else {
@@ -117,6 +119,7 @@ async function renderRoute() {
   }
 }
 window.addEventListener('hashchange',renderRoute);
+configureStatistics({api, jobsRequest, node, button, link, icon, empty, errorBox, footer, toast, $, get demo(){return demo;}, version:()=>routeVersion});
 
 function rangeBounds() {
   if (filters.range === 'all') return {};
@@ -399,7 +402,7 @@ function renderJobs(){
 async function loadJobs(more=false){
   const version=routeVersion,generation=++jobsVersion;const grid=$('jobs-grid');if(!grid)return;if(!more)grid.replaceChildren(node('div','Loading jobs…','loading'));
   try{const page=await jobsRequest('/api/jobs?limit=50'+(more&&jobsListCursor?'&cursor='+encodeURIComponent(jobsListCursor):''));if(version!==routeVersion||generation!==jobsVersion)return;jobsList=more?[...jobsList,...page.jobs]:page.jobs;jobsListCursor=page.next_cursor;grid.replaceChildren();
-    for(const j of jobsList){const card=link('',jobHash(j.job_id),'job-card');const top=node('div','','job-card-top');top.append(icon('folder'),node('span',j.selected?'Next observation':`${j.observation_count} observation${j.observation_count===1?'':'s'}`,j.selected?'lime tiny':'muted tiny'));card.append(top,node('h2',j.name),node('p',j.theme,'job-theme-preview'));const foot=node('div','','job-card-bottom');foot.append(node('span',`${j.observation_count} observations · revision ${j.revision}`),icon('arrow-up-right'));card.append(foot);grid.append(card);}
+    for(const j of jobsList){const card=link('',jobHash(j.job_id),'job-card');const top=node('div','','job-card-top');top.append(icon('folder'),node('span',j.selected?'Next observation':`${j.observation_count} observation${j.observation_count===1?'':'s'}`,j.selected?'lime tiny':'muted tiny'));card.append(top,node('h2',j.name),node('p',j.theme,'job-theme-preview'));const foot=node('div','','job-card-bottom');foot.append(node('span',`${j.observation_count} observations · revision ${j.revision}`),icon('arrow-up-right'));card.append(foot);const wrap=node('div','','job-card-wrap');wrap.append(card,link('Statistics',statisticsHash(j.job_id),'job-card-stats','bar-chart-2'));grid.append(wrap);}
     if(!jobsList.length)grid.append(empty('Bring observations together.','Create a job with a general theme, then select it for future observations.'));
     $('jobs-more').replaceChildren();if(jobsListCursor)$('jobs-more').append(button('More jobs',()=>loadJobs(true),'load-more'));
   }catch(e){if(version===routeVersion)grid.replaceChildren(errorBox(e.message),button('Try again',()=>loadJobs()));}
@@ -408,7 +411,7 @@ async function renderJob(id){
   const version=routeVersion,generation=++jobsVersion;$('content').replaceChildren(node('div','Loading job…','loading'));
   try{const [job,context]=await Promise.all([jobsRequest('/api/jobs/'+encodeURIComponent(id)),fetchJobContext()]);if(version!==routeVersion||generation!==jobsVersion)return;
     document.title=`${job.name} · FieldNotes`;const head=node('div','','jobs-heading'),copy=node('div');copy.append(link('All jobs','#/jobs','back-link','arrow-left'),node('h1',job.name),node('p',`${job.observation_count} observations · revision ${job.revision}`,'muted'));
-    const actions=node('div','','job-actions');const use=button(context.selected_job_id===id?'Selected for next observation':'Use for next observation',async()=>{use.disabled=true;try{await mutateJob('/api/jobs/selection',{job_id:id,expected_selection_revision:context.selection_revision});if(version===routeVersion)await renderJob(id);toast('Selected for the next observation. Current capture is unchanged.');}catch(e){toast(e.message);use.disabled=false;}},'primary');use.disabled=!context.selection_allowed||context.selected_job_id===id;actions.append(use,button('Add untracked observations',()=>assignUntrackedDialog(job),'','plus'));head.append(copy,actions);
+    const actions=node('div','','job-actions');const use=button(context.selected_job_id===id?'Selected for next observation':'Use for next observation',async()=>{use.disabled=true;try{await mutateJob('/api/jobs/selection',{job_id:id,expected_selection_revision:context.selection_revision});if(version===routeVersion)await renderJob(id);toast('Selected for the next observation. Current capture is unchanged.');}catch(e){toast(e.message);use.disabled=false;}},'primary');use.disabled=!context.selection_allowed||context.selected_job_id===id;actions.append(use,button('Add untracked observations',()=>assignUntrackedDialog(job),'','plus'),link('Statistics',statisticsHash(id),'button-link','bar-chart-2'));head.append(copy,actions);
     const brief=node('section','','job-brief');brief.append(node('p','GENERAL THEME','eyebrow'),node('p',job.theme,'job-theme-full'));const edit=node('details','','job-edit');edit.append(node('summary','Edit name and theme'),jobForm(job,async values=>{await mutateJob('/api/jobs/'+encodeURIComponent(id),{...values,expected_revision:job.revision});if(version===routeVersion){await renderJob(id);toast('Job updated. New sessions will use the new theme.');}}));brief.append(edit);
     if(context.current_session){const current=context.current_session;brief.append(node('p',`Current observation: ${current.job?.name||'Untracked'}. Selecting this job applies only to the next session.`,'capture-note'));}
     if(!context.selection_allowed)brief.append(node('p','Saved archive · jobs can be organized, but capture selection is disabled.','muted tiny'));

@@ -201,3 +201,7 @@ Use **Jobs** to group observation sessions under a configurable general theme. S
 MCP provides `create_job`, `list_jobs`, `get_job`, `update_job`, `get_job_context`, `switch_job`, and `assign_observations_to_job`. Existing session listing supports job and Untracked filters. See [Jobs behavior, MCP examples, HTTP routes, storage, and unexecuted coverage](docs/jobs.md).
 
 The server must be restarted to load the new routes and tools. Implementation has not been verified, and no restart was performed.
+
+## Job statistics
+
+Each job has a **Statistics** page (`#/jobs/<job_id>/statistics`) that aggregates only the sessions assigned to that job. Built-in metrics (observation windows by change state, observed actions, uncertainties, latency, tokens, video gaps, memory assertions, session spans) are computed directly from saved observations with no model calls. A free-text box asks the configured model to build a custom chart; the model works through the MCP tools, returns a structured `ChartSpec`, and the server rejects any chart whose points cite observations outside the job. Charts render with vendored Chart.js. See [statistics behavior, ChartSpec, MCP tools, HTTP routes, and storage](docs/statistics.md).

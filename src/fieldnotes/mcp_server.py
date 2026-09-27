@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from .core import Runtime, VisualSummary
 from .memory_store import MemoryProposal
+from .statistics import register_statistics_tools
 
 
 class GenerationMetadata(BaseModel):
@@ -98,6 +99,8 @@ def make_mcp(runtime: Runtime) -> FastMCP:
 
     if getattr(runtime, 'jobs', None):
         register_job_tools(server, runtime.jobs)
+    if getattr(runtime, 'statistics', None):
+        register_statistics_tools(server, runtime.statistics)
     if memory:
         register_memory_tools(server, memory)
     return server
