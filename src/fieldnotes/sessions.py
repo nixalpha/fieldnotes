@@ -71,17 +71,52 @@ class Sessions:
             raise ValueError('Unknown session_id')
         return json.loads(rows[0][0])
 
-    def list(self, limit=50, cursor=None):
+    def rename(self, session_id, name):
+        name = name.strip()
+        if not 1 <= len(name) <= 100:
+            raise ValueError('Name must contain 1–100 characters.')
+        body = self.get(session_id)
+        body.update(name=name, display_name=name)
+        self._save(body)
+        # Keep lifecycle snapshots in sync so later frame/end writes retain the name.
+        if self.current and self.current['session_id'] == session_id:
+            self.current.update(name=name, display_name=name)
+        if self.last_ended and self.last_ended['session_id'] == session_id:
+            self.last_ended.update(name=name, display_name=name)
+        self.runtime.revision += 1
+        return body
+
+    def describe(self, session):
+        jobs = getattr(self.runtime, 'jobs', None)
+        return jobs.describe(session) if jobs else {**session, 'job_id': None, 'job': None,
+                                                    'job_context': session.get('job_context'), 'job_assignment': None}
+
+    def list(self, limit=50, cursor=None, job_id=None, untracked_only=False):
         if not 1 <= limit <= 200:
             raise ValueError('limit must be 1..200')
+        if job_id is not None and untracked_only:
+            raise ValueError('job_id and untracked_only cannot be combined')
         try:
             before = int(cursor) if cursor is not None else 2**63-1
+            if before < 0:
+                raise ValueError()
         except (ValueError, TypeError):
             raise ValueError('Invalid session cursor') from None
-        rows = self.store.rows('''SELECT s.seq,s.body,count(e.id) FROM recording_sessions s
-            LEFT JOIN evidence e ON e.session=s.id WHERE s.seq<?
-            GROUP BY s.seq ORDER BY s.seq DESC LIMIT ?''', (before, limit+1))
-        return {'sessions': [{**json.loads(raw), 'frame_count': count} for _, raw, count in rows[:limit]],
+        jobs = getattr(self.runtime, 'jobs', None)
+        predicate, args = '', [before]
+        if job_id is not None:
+            if not jobs:
+                raise ValueError('Jobs service unavailable')
+            jobs.get(job_id)
+            predicate = ' AND EXISTS (SELECT 1 FROM job_memberships m WHERE m.session_id=s.id AND m.job_id=?)'
+            args.append(job_id)
+        elif untracked_only and jobs:
+            predicate = ' AND NOT EXISTS (SELECT 1 FROM job_memberships m WHERE m.session_id=s.id)'
+        args.append(limit+1)
+        rows = self.store.rows(f'''SELECT s.seq,s.body,count(e.id) FROM recording_sessions s
+            LEFT JOIN evidence e ON e.session=s.id WHERE s.seq<?{predicate}
+            GROUP BY s.seq ORDER BY s.seq DESC LIMIT ?''', tuple(args))
+        return {'sessions': [self.describe({**json.loads(raw), 'frame_count': count}) for _, raw, count in rows[:limit]],
                 'next_cursor': str(rows[limit-1][0]) if len(rows)>limit else None,
                 'active_session_id': self.current['session_id'] if self.current else None,
                 'archive': self.archive}
@@ -91,7 +126,8 @@ class Sessions:
         age = None
         if current and current.get('last_frame'):
             age = self.runtime.elapsed_ms() - current['last_frame']['elapsed_ms']
-        return {'active_session_id': current['session_id'] if current else None,
+        return {'jobs': self.runtime.jobs.context() if getattr(self.runtime, 'jobs', None) else None,
+                'active_session_id': current['session_id'] if current else None,
                 'session_state': current['state'] if current else 'ended' if self.last_ended or self.archive else 'waiting_for_video',
                 'session_name': current.get('name') if current else None,
                 'last_ended_session': self.last_ended,
@@ -107,7 +143,11 @@ class Sessions:
                 'start_reason': reason, 'end_reason': None, 'boundaries_inferred': False,
                 'exact_end_known': True, 'first_frame': None, 'last_frame': None,
                 'start_elapsed_ms': None, 'end_elapsed_ms': None, 'frame_count_received': 0}
-        self._save(body)
+        if getattr(self.runtime, 'jobs', None):
+            self.runtime.jobs.capture_session(body)
+        else:
+            body['job_context'] = None
+            self._save(body)
         self.current = body
         self.runtime.session_id = body['session_id']
         self.runtime.first_frame_ms = None
@@ -171,7 +211,7 @@ class Sessions:
             if rows[0][0] != signature:
                 raise ValueError('request_id was already used with different arguments')
             return {**json.loads(rows[0][1]), 'duplicate': True}
-        result = {'session': operation(), 'duplicate': False,
+        result = {'session': self.describe(operation()), 'duplicate': False,
                   'automatic_start': True, 'notice': 'The next decoded frame starts a session if none is active.'}
         encoded = json.dumps(result)
         self.store.execute('INSERT INTO session_requests VALUES(?,?,?)', (request_id, signature, encoded))

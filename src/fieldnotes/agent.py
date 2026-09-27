@@ -51,6 +51,8 @@ class Agent:
         self.runtime, self.url, self.model = runtime, url, model
         self.interval_seconds = 5.0
         self.brief = "Describe the visible physical work, including placing and moving cones."
+        self.runtime.observation_brief = self.brief
+        self.busy_session = None
         self.enabled = False
         self.pending: dict | None = None
         self.wakeup = asyncio.Event()
@@ -79,6 +81,7 @@ class Agent:
             raise ValueError(self.model.error or "Model capability check is still running")
         self.pause()
         self.brief, self.interval_seconds = brief, interval
+        self.runtime.observation_brief = brief
         self.enabled = True
         self.error = None
 
@@ -180,6 +183,7 @@ class Agent:
                         if observation is None:
                             continue
                         self.busy = True
+                        self.busy_session = observation["session_id"]
                         started = time.monotonic()
                         try:
                             # Reading the pinned observation again avoids losing evidence to buffer eviction.
@@ -202,7 +206,7 @@ class Agent:
                                 pass  # Optional memory context must not stop ordinary summaries.
                             async with asyncio.timeout(self.model_timeout):
                                 visual, usage = await self.model.summarize(metadata, images,
-                                                                           priors, self.brief)
+                                                                           priors, metadata.get("brief", self.brief))
                             self.last_duration_ms = round((time.monotonic() - started) * 1000)
                             await call(session, "record_summary", {
                                 "observation_id": observation["observation_id"],
@@ -235,6 +239,7 @@ class Agent:
                             self.runtime.record_system(observation, "model_error", self.error)
                         finally:
                             self.busy = False
+                            self.busy_session = None
             except Exception as exc:
                 self.error = f"MCP worker connection: {str(exc)[:300]}"
                 await asyncio.sleep(1)

@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from .core import Runtime, VisualSummary
 from .memory_store import MemoryProposal
+from .statistics import register_statistics_tools
+from .observation_details import observation_details
 
 
 class GenerationMetadata(BaseModel):
@@ -24,10 +26,29 @@ def make_mcp(runtime: Runtime) -> FastMCP:
 
     memory = getattr(runtime, "memory", None)
 
+    @server.tool(structured_output=False)
+    async def get_observation_details(session_id: str | None = None,
+                                      observation_id: str | None = None,
+                                      cursor: str | None = None, limit: int = 3,
+                                      include_images: bool = False) -> list:
+        """Read a saved activity (session_id) or analysis window (observation_id), exactly one.
+
+        Returns chronological windows, stored summaries, job context, gaps and frame metadata.
+        Follow next_cursor for the full activity; the last window alone is not its history.
+        limit is 1..20 windows, or 1..4 with original JPEGs. First block is JSON;
+        image_mapping identifies subsequent image blocks. No writes or model calls occur.
+        Summaries are prior interpretations; timestamps describe local receipt.
+        """
+        metadata, images = observation_details(runtime, session_id=session_id,
+            observation_id=observation_id, cursor=cursor, limit=limit,
+            include_images=include_images)
+        return image_blocks(metadata, images)
+
     @server.tool()
-    async def list_sessions(limit: int = 50, cursor: str | None = None) -> dict:
+    async def list_sessions(limit: int = 50, cursor: str | None = None,
+                            job_id: str | None = None, untracked_only: bool = False) -> dict:
         """List recording sessions, including historical and waiting-for-video sessions."""
-        return runtime.sessions.list(limit, cursor)
+        return runtime.sessions.list(limit, cursor, job_id, untracked_only)
 
     @server.tool()
     async def start_session(request_id: str, name: str | None = None,
@@ -95,9 +116,59 @@ def make_mcp(runtime: Runtime) -> FastMCP:
         runtime.revision += 1
         return entry
 
+    if getattr(runtime, 'jobs', None):
+        register_job_tools(server, runtime.jobs)
+    if getattr(runtime, 'statistics', None):
+        register_statistics_tools(server, runtime.statistics)
     if memory:
         register_memory_tools(server, memory)
     return server
+
+
+def register_job_tools(server, jobs):
+    @server.tool()
+    def create_job(request_id: str, name: str, theme: str) -> dict:
+        """Create a named job and theme. Does not select it or invoke a model. Idempotent by request_id."""
+        return jobs.create(request_id, name, theme)
+
+    @server.tool()
+    def list_jobs(limit: int = 50, cursor: str | None = None) -> dict:
+        """List jobs with observation counts and the selection for future sessions."""
+        return jobs.list(limit, cursor)
+
+    @server.tool()
+    def get_job(job_id: str) -> dict:
+        """Read a job's name, theme, current revision, timestamps and observation count."""
+        return jobs.get(job_id)
+
+    @server.tool()
+    def update_job(request_id: str, job_id: str, expected_revision: int,
+                   name: str | None = None, theme: str | None = None) -> dict:
+        """Update job configuration with revision protection. Existing capture contexts never change."""
+        return jobs.update(request_id, job_id, expected_revision, name, theme)
+
+    @server.tool()
+    def get_job_context() -> dict:
+        """Read next-session selection and current-session membership and immutable capture context."""
+        return jobs.context()
+
+    @server.tool()
+    def switch_job(request_id: str, job_id: str | None, expected_selection_revision: int) -> dict:
+        """Select a job for NEW sessions only; null selects Untracked. Current recording is unchanged.
+
+        Read get_job_context first and supply its selection_revision. This does not start,
+        end, rotate or reassign a session and does not change an ongoing observation's theme.
+        """
+        return jobs.switch(request_id, job_id, expected_selection_revision)
+
+    @server.tool()
+    def assign_observations_to_job(request_id: str, job_id: str, session_ids: list[str]) -> dict:
+        """Atomically assign 1–100 Untracked observation sessions to a job, including active sessions.
+
+        Same-job membership is a no-op. Any other membership rejects the whole batch.
+        Original LLM context, summaries and evidence remain unchanged; no model calls occur.
+        """
+        return jobs.assign(request_id, job_id, session_ids)
 
 
 def image_blocks(metadata, images):
@@ -187,4 +258,3 @@ def register_memory_tools(server, memory):
     async def stop_visual_track(track_id: str) -> dict:
         """Stop a selection while retaining masks and source evidence."""
         return memory.stop_track(track_id)
-

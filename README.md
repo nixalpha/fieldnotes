@@ -114,6 +114,7 @@ Exact client configuration syntax depends on the client. Tools:
 | `get_stream_status` | none | Freshness, session, epoch, dimensions, buffered time range |
 | `get_observation_window` | `start_elapsed_ms`, `end_elapsed_ms` | First block: JSON metadata; remaining blocks: native JPEG image content in matching frame order |
 | `get_recent_summaries` | `limit` (1–20, default 3) | Completed summaries in the active session |
+| `get_observation_details` | Exactly one of `session_id` or `observation_id`; optional `cursor`, `limit=3`, `include_images=false` | Read saved windows, summaries, job context, gaps and frame metadata; optionally return original JPEGs |
 | `record_summary` | `observation_id`, `summary`, optional `generation` | Validate citations and persist once per observation |
 
 `summary` has `summary` (text), `observed_actions` (description plus nonempty `frame_ids`), `uncertainties`
@@ -123,6 +124,40 @@ metadata contains `model`, `duration_ms`, `input_tokens`, and `output_tokens`.
 The built-in agent genuinely calls these tools over HTTP MCP to fetch evidence and persist model output.
 It bridges MCP image blocks into Responses API image inputs locally; the cloud model does not need
 network access to localhost. Scheduling and missing-video entries are deterministic application logic.
+
+### Inspect a saved activity
+
+UI observations represent recording sessions; a stored `observation_id` identifies one short
+analysis window within that activity. Use `list_sessions` to find the session ID, then call:
+
+```json
+{"session_id":"<session-id>","limit":3}
+```
+
+Pass these arguments to `get_observation_details`. Follow its `next_cursor` with the same
+session ID to read the remaining windows. A final window alone does not describe the full activity.
+For a single window and its original images, use:
+
+```json
+{"observation_id":"<observation-id>","include_images":true}
+```
+
+The first MCP content block is JSON containing `session`, `total_windows`, `windows`,
+`next_cursor`, and `image_mapping`. Each window preserves its recorded brief, captured
+`job_context`, coverage/gaps, frames, and stored `summary` (or null with
+`summary_status: "missing"`). Current job membership is returned on `session` separately
+from captured context. Summary errors and generation metadata remain visible.
+
+Metadata pages allow 1–20 windows; image pages allow 1–4 windows (up to 20 retained frames).
+`image_mapping` identifies each following JPEG block by its content-block index, window,
+session, frame, and evidence ID. Frames report `evidence_status` and `image_status`, so
+unindexed evidence or missing JPEGs do not hide the remaining results. Existing indexed
+evidence includes its saved hash; `get_evidence` can retrieve server-issued citation bundles.
+
+This command reads saved SQLite records and JPEGs in live or archive mode without creating
+observations, indexing evidence, modifying records, or calling a model. Summaries are prior
+interpretations, retained frames are not continuous video, and timestamps represent local
+receipt rather than exposure. Restart the server to expose a newly installed tool.
 There is no open-ended autonomous flight/tool loop.
 
 ## HTTP endpoints
@@ -185,3 +220,23 @@ Live sessions now follow decoded video: the first frame starts a session and 10 
 ### Real live summaries
 
 Start live observation with `uv run --extra perception fieldnotes dev --autostart`. This uses `OPENAI_MODEL` (currently configured as `gpt-6-luna`) and `OPENAI_API_KEY` from `.env`. Missing credentials or model errors are reported; live mode never substitutes placeholder summaries. Existing historical stub entries remain labeled as such. Local search uses MobileCLIP2-S0, and selected-region tracking uses EdgeTAM.
+
+## Redesigned portal
+
+The default page is now **Sessions**, with **Live** in the top navigation and a dedicated review workspace for each session. **Explore demo** opens an isolated six-session demonstration with generated camera imagery; it never substitutes demo data into real recordings.
+
+Session accounts are synthesized from retained observations using the configured model after session end, or via **Generate overview** in review. This adds model usage; merely opening a historical session does not trigger generation. Image search and tracking remain available through the backend and MCP, but are removed from the UI.
+
+See [portal routes, synthesis behavior, APIs, assets, and verification status](docs/portal.md). This overhaul has **not been verified**, per request; no tests, builds, browser checks or application restarts were run.
+
+## Jobs
+
+Use **Jobs** to group observation sessions under a configurable general theme. Select a job for the **next** session; existing sessions retain their original captured theme. Assign Untracked observations to a job without rewriting their evidence or LLM context. Themes supplement the task-specific observation brief.
+
+MCP provides `create_job`, `list_jobs`, `get_job`, `update_job`, `get_job_context`, `switch_job`, and `assign_observations_to_job`. Existing session listing supports job and Untracked filters. See [Jobs behavior, MCP examples, HTTP routes, storage, and unexecuted coverage](docs/jobs.md).
+
+The server must be restarted to load the new routes and tools. Implementation has not been verified, and no restart was performed.
+
+## Job statistics
+
+Each job has a **Statistics** page (`#/jobs/<job_id>/statistics`) that aggregates only the sessions assigned to that job. Built-in metrics (observation windows by change state, observed actions, uncertainties, latency, tokens, video gaps, memory assertions, session spans) are computed directly from saved observations with no model calls. A free-text box asks the configured model to build a custom chart; the model works through the MCP tools, returns a structured `ChartSpec`, and the server rejects any chart whose points cite observations outside the job. Charts render with vendored Chart.js. See [statistics behavior, ChartSpec, MCP tools, HTTP routes, and storage](docs/statistics.md).

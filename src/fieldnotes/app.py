@@ -16,11 +16,17 @@ from pydantic import BaseModel, Field
 from .agent import Agent
 from .core import Runtime
 from .ingest import Decoder
+from .jobs import Jobs
+from .jobs_api import router as jobs_router
 from .mcp_server import make_mcp
-from .model import VisionModel
 from .memory import Memory
-from .sessions import Sessions
 from .memory_api import router as memory_router
+from .model import VisionModel
+from .portal import Portal
+from .portal import router as portal_router
+from .sessions import Sessions
+from .statistics import Statistics
+from .statistics_api import router as statistics_router
 
 STATIC = Path(__file__).parent / "static"
 
@@ -55,15 +61,21 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     memory = Memory(runtime, model_root=model_root, archive=archive, mock=stub or archive)
     runtime.memory = memory
     runtime.sessions = Sessions(runtime, memory.store, archive=archive)
+    runtime.jobs = Jobs(runtime, memory.store, archive=archive)
+    model = VisionModel(stub or archive)
+    mcp_url = f"http://127.0.0.1:{port}/mcp"
+    runtime.statistics = Statistics(runtime, memory.store, runtime.jobs, archive=archive, model_name=model.name, mcp_url=mcp_url)
     mcp = make_mcp(runtime)
     mcp_app = mcp.streamable_http_app()
-    agent = Agent(runtime, f"http://127.0.0.1:{port}/mcp", VisionModel(stub or archive))
+    agent = Agent(runtime, mcp_url, model)
     agent.autostart = autostart
+    portal = Portal(runtime, agent, memory, archive)
     def session_ended(session, reason):
         try:
             agent.session_ended(session, reason)
         finally:
             memory.end_session(session['session_id'], reason)
+            portal.ended(session, reason)
     runtime.sessions.on_end = session_ended
     decoder = Decoder(runtime, rtmp_url)
     publish_url = f"rtmp://{lan_ip()}:1935/live/drone"
@@ -86,6 +98,8 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
                     await asyncio.gather(decoder_task, return_exceptions=True)
                 runtime.sessions.shutdown()
                 await agent.close()
+                await runtime.statistics.close()
+                await portal.close()
                 await memory.close()
                 runtime.journal.close()
 
@@ -93,6 +107,9 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     app.state.runtime, app.state.agent = runtime, agent
     app.state.memory = memory
     app.include_router(memory_router(memory))
+    app.include_router(portal_router(portal))
+    app.include_router(jobs_router(runtime.jobs))
+    app.include_router(statistics_router(runtime.statistics))
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -114,9 +131,9 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
         return {"stream": runtime.status(), "agent": agent.status(), "publish_url": publish_url}
 
     @app.get("/api/sessions")
-    async def sessions(limit: int = 50, cursor: str | None = None):
+    async def sessions(limit: int = 50, cursor: str | None = None, job_id: str | None = None, untracked_only: bool = False):
         try:
-            return runtime.sessions.list(limit, cursor)
+            return runtime.sessions.list(limit, cursor, job_id, untracked_only)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 

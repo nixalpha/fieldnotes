@@ -1,33 +1,25 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FieldNotes · Work, observed.</title><link rel="stylesheet" href="/static/style.css"></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>FieldNotes · Work, remembered.</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/vendor/feather.min.js" defer></script>
+  <script src="/static/vendor/chartjs/chart.umd.js" defer></script>
+  <script type="module" src="/static/app.js"></script>
+</head>
 <body>
-<header><a class="brand" href="/">◉ FieldNotes</a><span class="tagline">WORK, OBSERVED.</span><a class="export" href="/api/export">Export journal ↗</a></header>
-<main>
-<section class="heading"><div><p class="eyebrow">YOUR EYES IN THE FIELD</p><h1>A record of work<br>as it happens.</h1><p class="intro">Live perspective. Timestamped observations. Evidence you can revisit.</p></div><div class="session"><span id="source">DRONE</span><span id="connection" role="status">Connecting…</span><small id="session-id"></small><small id="session-state"></small></div></section>
-<div class="workspace">
-<section class="observation">
-<div class="panel preview-panel"><div class="panel-title"><h2>Live view</h2><span id="freshness">Waiting for video</span></div><div class="video"><img id="preview" src="/api/preview" alt="Live drone camera feed"><div id="video-placeholder">Awaiting your perspective<span>Publish the DJI stream to the address below.</span></div><span id="video-label">DRONE FEED</span></div><div class="address"><span>RTMP PUBLISH ADDRESS</span><code id="publish">Loading…</code><button id="copy" type="button">Copy</button></div></div>
-<div class="panel controls"><div class="panel-title"><h2>Observation brief</h2><span id="model">Checking model…</span></div><form id="settings"><label for="brief">What work should the observer describe?</label><textarea id="brief" rows="3" maxlength="4000" required>Describe the visible physical work, including placing and moving cones.</textarea><div class="controls-row"><label for="interval">Observe every <input id="interval" type="number" value="5" min="1" max="60" step="1" required> seconds</label><button id="pause" type="button" class="secondary">Pause</button><button id="start" type="submit">Start observing</button></div></form><p id="agent-status" role="status">Preparing observer…</p><p id="error" role="alert" hidden></p><p class="footnote">Intervals use local video receipt time. Summaries arrive after analysis; they may lag the live feed. Pausing lets the current analysis finish.</p></div>
-</section>
-<section class="panel journal"><div class="panel-title"><div><p class="eyebrow">THE WORK JOURNAL</p><h2>What happened</h2></div><span id="count">0 entries</span></div><div id="entries"><div class="empty"><span>↳</span><h3>The story starts here.</h3><p>Connect your video and start observing.<br>Each note will include its visual evidence.</p></div></div></section>
-</div>
-<section class="panel memory-panel">
-<div class="panel-title"><div><p class="eyebrow">EVIDENCE YOU CAN REVISIT</p><h2>Visual memory</h2></div><span id="memory-mode">Loading…</span></div>
-<p id="memory-status" role="status"></p><p id="memory-session-state" role="status"></p><p id="memory-error" role="alert" hidden></p>
-<div class="memory-tools"><label>Session <select id="memory-session"></select></label><button id="memory-follow" type="button">Follow live session</button><button id="memory-more-sessions" type="button" hidden>More sessions</button><button id="memory-refresh" type="button">Refresh history</button></div>
-<form id="memory-search"><label for="memory-query">Find earlier evidence</label><div class="controls-row"><input id="memory-query" placeholder="An open laptop" maxlength="1000" required><button>Search images</button></div></form>
-<p class="footnote">Similarity retrieves candidates. It does not prove a condition or an action.</p>
-<div id="memory-results" class="memory-thumbs"></div>
-<label for="memory-time">Saved observation <span id="memory-time-label"></span></label><input id="memory-time" type="range" min="0" max="0" value="0">
-<div class="memory-columns"><div>
-<div class="memory-selection"><img id="memory-original" alt="Selected original evidence"><canvas id="memory-points"></canvas></div>
-<p id="memory-source" class="meta"></p>
-<div class="controls-row"><input id="track-label" placeholder="Selection label" maxlength="120"><select id="track-point-kind"><option value="1">Include point</option><option value="0">Exclude point</option></select><button id="track-clear" type="button">Clear points</button></div>
-<p class="footnote">Click the original image to select a region. Add exclude points to refine the seed. Image coordinates do not establish world movement.</p>
-<div class="controls-row"><button id="track-preview" type="button">Preview seed mask</button><button id="track-start" type="button">Start tracking</button></div>
-<div id="memory-tracks"></div>
-</div><div><h3>As observed at this time</h3><p class="footnote">Last observed is not currently known. Interpretations remain fallible.</p><div id="memory-state"></div><h3>Changes and uncertainty</h3><div id="memory-changes"></div></div></div>
-</section><footer>FieldNotes / Prototype<span>Camera observations, not inferred intent. Flight remains with the operator.</span></footer>
-</main><script src="/static/app.js" defer></script><script src="/static/memory.js" defer></script>
-</body></html>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="topbar">
+    <a class="brand" href="#/sessions">FieldNotes</a>
+    <nav aria-label="Main navigation"><a href="#/jobs" data-nav="jobs">Jobs</a><a href="#/sessions" data-nav="sessions">Sessions</a><a href="#/live" data-nav="live">Live</a></nav>
+    <div class="header-end"><button class="demo-switch" id="demo-switch" type="button" title="Generated imagery and authored observations; no camera or model calls">Explore demo</button><span class="connection" id="connection" role="status"><i class="status-dot"></i><span>Connecting</span></span></div>
+  </header>
+  <main id="content" tabindex="-1"></main>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript><p class="empty">JavaScript is required to browse sessions and view live observations.</p></noscript>
+</body>
+</html>
