@@ -16,14 +16,17 @@ from pydantic import BaseModel, Field
 from .agent import Agent
 from .core import Runtime
 from .ingest import Decoder
-from .mcp_server import make_mcp
-from .model import VisionModel
-from .memory import Memory
-from .sessions import Sessions
 from .jobs import Jobs
 from .jobs_api import router as jobs_router
-from .portal import Portal, router as portal_router
+from .mcp_server import make_mcp
+from .memory import Memory
 from .memory_api import router as memory_router
+from .model import VisionModel
+from .portal import Portal
+from .portal import router as portal_router
+from .sessions import Sessions
+from .statistics import Statistics
+from .statistics_api import router as statistics_router
 
 STATIC = Path(__file__).parent / "static"
 
@@ -59,9 +62,12 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     runtime.memory = memory
     runtime.sessions = Sessions(runtime, memory.store, archive=archive)
     runtime.jobs = Jobs(runtime, memory.store, archive=archive)
+    model = VisionModel(stub or archive)
+    mcp_url = f"http://127.0.0.1:{port}/mcp"
+    runtime.statistics = Statistics(runtime, memory.store, runtime.jobs, archive=archive, model_name=model.name, mcp_url=mcp_url)
     mcp = make_mcp(runtime)
     mcp_app = mcp.streamable_http_app()
-    agent = Agent(runtime, f"http://127.0.0.1:{port}/mcp", VisionModel(stub or archive))
+    agent = Agent(runtime, mcp_url, model)
     agent.autostart = autostart
     portal = Portal(runtime, agent, memory, archive)
     def session_ended(session, reason):
@@ -92,6 +98,7 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
                     await asyncio.gather(decoder_task, return_exceptions=True)
                 runtime.sessions.shutdown()
                 await agent.close()
+                await runtime.statistics.close()
                 await portal.close()
                 await memory.close()
                 runtime.journal.close()
@@ -102,6 +109,7 @@ def create_app(data_dir: Path | None = None, *, port: int = 8000, source: str = 
     app.include_router(memory_router(memory))
     app.include_router(portal_router(portal))
     app.include_router(jobs_router(runtime.jobs))
+    app.include_router(statistics_router(runtime.statistics))
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):

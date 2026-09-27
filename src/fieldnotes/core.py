@@ -190,6 +190,7 @@ class Runtime:
         self.session_id = None
         self.sessions = None
         self.jobs = None
+        self.statistics = None
         self.source = source
         self.buffer = FrameBuffer()
         self.journal = Journal(directory)

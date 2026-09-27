@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from .core import Runtime, VisualSummary
 from .memory_store import MemoryProposal
+from .statistics import register_statistics_tools
+from .observation_details import observation_details
 
 
 class GenerationMetadata(BaseModel):
@@ -23,6 +25,24 @@ def make_mcp(runtime: Runtime) -> FastMCP:
     server = FastMCP("FieldNotes", stateless_http=True, json_response=True, log_level="WARNING")
 
     memory = getattr(runtime, "memory", None)
+
+    @server.tool(structured_output=False)
+    async def get_observation_details(session_id: str | None = None,
+                                      observation_id: str | None = None,
+                                      cursor: str | None = None, limit: int = 3,
+                                      include_images: bool = False) -> list:
+        """Read a saved activity (session_id) or analysis window (observation_id), exactly one.
+
+        Returns chronological windows, stored summaries, job context, gaps and frame metadata.
+        Follow next_cursor for the full activity; the last window alone is not its history.
+        limit is 1..20 windows, or 1..4 with original JPEGs. First block is JSON;
+        image_mapping identifies subsequent image blocks. No writes or model calls occur.
+        Summaries are prior interpretations; timestamps describe local receipt.
+        """
+        metadata, images = observation_details(runtime, session_id=session_id,
+            observation_id=observation_id, cursor=cursor, limit=limit,
+            include_images=include_images)
+        return image_blocks(metadata, images)
 
     @server.tool()
     async def list_sessions(limit: int = 50, cursor: str | None = None,
@@ -98,6 +118,8 @@ def make_mcp(runtime: Runtime) -> FastMCP:
 
     if getattr(runtime, 'jobs', None):
         register_job_tools(server, runtime.jobs)
+    if getattr(runtime, 'statistics', None):
+        register_statistics_tools(server, runtime.statistics)
     if memory:
         register_memory_tools(server, memory)
     return server
@@ -236,4 +258,3 @@ def register_memory_tools(server, memory):
     async def stop_visual_track(track_id: str) -> dict:
         """Stop a selection while retaining masks and source evidence."""
         return memory.stop_track(track_id)
-

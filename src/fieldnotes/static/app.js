@@ -1,4 +1,5 @@
 import {demoSessions, demoReview, demoState, demoActivity, demoJobsRequest, demoDecorate, demoJobContext} from './demo.js';
+import {configureStatistics, renderStatistics, statisticsHash, stopStatistics} from './statistics.js';
 
 const $ = id => document.getElementById(id);
 const node = (tag, value = '', cls = '') => { const n = document.createElement(tag); if (value) n.textContent = value; if (cls) n.className = cls; return n; };
@@ -47,19 +48,28 @@ async function api(path, body) {
 
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 5000); }
 function errorBox(message) { return node('div',message,'error-box'); }
-function empty(title, description, compact = false) { return append(node('div','','empty'+(compact?' compact':'')), node('h2',title), node('p',description)); }
-function footer() { const f = node('footer','','page-foot'); f.append(node('span',demo ? 'FieldNotes / Demonstration' : 'FieldNotes / Camera observations, not inferred intent.')); f.append(demo ? node('span','Generated images · authored observations') : link('Export journal','/api/export')); return f; }
+function empty(title, description, compact = false) { return append(node('div','','empty'+(compact?' compact':'')), node('h2',title), description ? node('p',description) : null); }
+function footer() { const f = node('footer','','page-foot'); if (!demo) f.append(link('Export journal','/api/export')); return f; }
+// Every page opens with one row: back link + title + meta on the left, actions on the right.
+function pageHead(title, meta = '', back = null, ...actions) {
+  const head = node('div','','page-head'), copy = node('div','','page-copy'), row = node('div','','page-title');
+  if (back) row.append(link('', back.href, 'back-link', 'arrow-left')), row.firstChild.setAttribute('aria-label', back.label);
+  row.append(typeof title === 'string' ? node('h1', title) : title); copy.append(row);
+  if (meta) copy.append(node('p', meta, 'page-meta')); head.append(copy);
+  const acts = actions.filter(Boolean); if (acts.length) head.append(append(node('div','','job-actions'), ...acts));
+  return head;
+}
 function refHash(id, frame) { return `#/sessions/${encodeURIComponent(id)}${frame != null ? '?frame='+frame : ''}`; }
 function setDemo(value) {
   demo = value; const url = new URL(location.href); if (value) url.searchParams.set('demo','1'); else url.searchParams.delete('demo');
   url.hash = '#/sessions'; history.replaceState(null,'',url); filters.q='';filters.topic='';filters.job='';filters.range=value?'2':'all';currentJobContext=null;jobCatalog=[];
   setupConnection(); renderRoute();
 }
-$('demo-switch').onclick = () => setDemo(!demo); $('exit-demo').onclick = () => setDemo(false);
+$('demo-switch').onclick = () => setDemo(!demo);
 if (demo) filters.range = '2';
 function shell() {
-  $('demo-banner').hidden = !demo; $('demo-switch').textContent = demo ? 'Exit demo' : 'Explore demo';
-  document.querySelectorAll('[data-nav]').forEach(a => { if ((route === 'live' ? 'live' : ['jobs','job'].includes(route)?'jobs':'sessions') === a.dataset.nav) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
+  $('demo-switch').textContent = demo ? 'Exit demo' : 'Explore demo';
+  document.querySelectorAll('[data-nav]').forEach(a => { if ((route === 'live' ? 'live' : ['jobs','job','statistics'].includes(route)?'jobs':'sessions') === a.dataset.nav) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
   connection();
 }
 function connection(disconnected = false) {
@@ -94,10 +104,11 @@ async function renderRoute() {
   review = null; frames = []; selected = null; frameCursor = null; frameTask=null; frameLoading=false;
   const hash = location.hash.slice(1) || '/sessions';
   const [path, query] = hash.split('?'); const parts = path.split('/').filter(Boolean);
-  route = parts[0] === 'jobs' ? (parts[1]?'job':'jobs') : parts[0] === 'live' ? 'live' : parts[0] === 'sessions' && parts[1] ? 'review' : 'sessions';
-  shell(); $('content').replaceChildren();
+  route = parts[0] === 'jobs' ? (parts[1]?(parts[2]==='statistics'?'statistics':'job'):'jobs') : parts[0] === 'live' ? 'live' : parts[0] === 'sessions' && parts[1] ? 'review' : 'sessions';
+  stopStatistics(); shell(); $('content').replaceChildren();
   if (route === 'jobs') renderJobs();
   else if (route === 'job') renderJob(decodeURIComponent(parts[1]));
+  else if (route === 'statistics') renderStatistics(decodeURIComponent(parts[1]));
   else if (route === 'sessions') renderLibrary();
   else if (route === 'live') renderLive();
   else {
@@ -117,6 +128,7 @@ async function renderRoute() {
   }
 }
 window.addEventListener('hashchange',renderRoute);
+configureStatistics({api, jobsRequest, node, button, link, icon, empty, errorBox, pageHead, toast, $, get demo(){return demo;}, version:()=>routeVersion});
 
 function rangeBounds() {
   if (filters.range === 'all') return {};
@@ -127,16 +139,16 @@ function rangeBounds() {
 }
 function renderLibrary() {
   document.title='Sessions · FieldNotes';
-  const head = node('section','','library-head'); head.append(node('h1','Work, remembered.'));
+  const head = node('section','','library-head'); head.append(pageHead('Sessions'));
   const row = node('div','','filters'), search = node('label','','searchbox'); search.append(icon('search'));
   const input=node('input'); input.type='search';input.placeholder='Search sessions, spaces, outcomes';input.value=filters.q; input.setAttribute('aria-label','Search sessions, spaces, outcomes');
   input.oninput=()=>{filters.q=input.value;clearTimeout(filterTimer);filterTimer=setTimeout(()=>loadLibrary(),180);};search.append(input);row.append(search);
   const dateLabel=node('label','','date-filter');dateLabel.append(icon('calendar'));const select=node('select');select.setAttribute('aria-label','Date range');
   [['all','All time'],['1','Today'],['2','Last 2 days'],['7','Last 7 days'],['30','Last 30 days'],['custom','Custom range']].forEach(([value,label])=>{const option=node('option',label);option.value=value;select.append(option);});select.value=filters.range;
   select.onchange=()=>{filters.range=select.value;$('custom-dates').hidden=select.value!=='custom';loadLibrary();};dateLabel.append(select);row.append(dateLabel);
+  const jobFilter=node('label','','date-filter job-filter');jobFilter.append(icon('folder'));const jobSelect=node('select');jobSelect.id='library-job-filter';jobSelect.setAttribute('aria-label','Filter by job');jobSelect.append(new Option('All jobs',''),new Option('Untracked','untracked'));jobSelect.value=filters.job;jobSelect.onchange=()=>{filters.job=jobSelect.value;loadLibrary();};jobFilter.append(jobSelect);row.append(jobFilter);populateJobFilter(jobSelect);
   const chips=node('div','','topic-filters');chips.setAttribute('aria-label','Filter by topic');
   topics.forEach(topic=>{const b=button(topic,()=>{filters.topic=filters.topic===topic?'':topic;chips.querySelectorAll('button').forEach(c=>c.setAttribute('aria-pressed',String(c.textContent===filters.topic)));loadLibrary();},'chip');b.setAttribute('aria-pressed',String(topic===filters.topic));chips.append(b);});row.append(chips);head.append(row);
-  const jobFilter=node('label','','job-filter');jobFilter.append(icon('folder'));const jobSelect=node('select');jobSelect.id='library-job-filter';jobSelect.setAttribute('aria-label','Filter by job');jobSelect.append(new Option('All jobs',''),new Option('Untracked','untracked'));jobSelect.value=filters.job;jobSelect.onchange=()=>{filters.job=jobSelect.value;loadLibrary();};jobFilter.append(jobSelect);head.append(jobFilter);populateJobFilter(jobSelect);
   const dates=node('div','','custom-dates');dates.id='custom-dates';dates.hidden=filters.range!=='custom';
   for(const [key,label] of [['from','From'],['to','Through']]){const l=node('label',label+' '),field=node('input');field.type='date';field.value=filters[key];field.onchange=()=>{filters[key]=field.value;loadLibrary();};l.append(field);dates.append(l);}head.append(dates);
   const results=node('div');results.id='library-results';results.setAttribute('aria-live','polite');
@@ -202,12 +214,13 @@ function editObservationName(id){
 function renderReview(){
   const s=review.session;document.title=`${s.title} · FieldNotes`;
   const layout=node('div','','review-layout'),main=node('section','','review-main'),heading=node('div','','review-heading');
-  heading.append(link('All sessions','#/sessions','back-link','arrow-left'),observationTitle(s),node('p',`${date(s.started_at||s.created_at)} · ${time(s.started_at)} – ${s.state==='active'?'present':time(s.last_received_at||s.observed_until_at)}${s.location?' · '+s.location:s.mock?' · Mock interpretations':s.source==='replay'?' · Replay':''}`,'session-subtitle'));
+  const row=node('div','','page-title');row.append(link('','#/sessions','back-link','arrow-left'),observationTitle(s));row.firstChild.setAttribute('aria-label','All sessions');
+  heading.append(row,node('p',`${date(s.started_at||s.created_at)} · ${time(s.started_at)} – ${s.state==='active'?'present':time(s.last_received_at||s.observed_until_at)}${s.location?' · '+s.location:s.mock?' · Mock interpretations':s.source==='replay'?' · Replay':''}`,'session-subtitle'),sessionJobPanel(s));
   const stage=node('div','','image-stage');stage.id='image-stage';if(!frames.length)stage.append(empty('No retained images','This session has no saved camera evidence.',true));else{const original=img(imageURL(frames[0]),'Original retained camera frame',false);original.id='original-frame';stage.append(original);const provenance=node('span','','frame-provenance');provenance.id='frame-provenance';stage.append(provenance);}
-  main.append(heading,sessionJobPanel(s),stage,buildTimeline(),node('p',demo?'Generated demonstration imagery · playback advances through authored samples.':'Sampled frames · local receipt timestamps · unsaved intervals cannot be replayed.','sampled-note'));
+  main.append(heading,stage,buildTimeline());
   const aside=node('aside','','overview');aside.setAttribute('aria-label','Session account');const tabs=node('div','','tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Session account view');
   for(const[key,label]of[['overview','Overview'],['time','At this time']]){const b=button(label,()=>switchTab(key));b.id=`tab-${key}`;b.setAttribute('role','tab');b.setAttribute('aria-controls','account-panel');b.setAttribute('aria-selected',String(key===reviewTab));b.tabIndex=key===reviewTab?0:-1;b.onkeydown=e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();switchTab(key==='overview'?'time':'overview');document.querySelector('.tabs [aria-selected=true]')?.focus();}};tabs.append(b);}
-  const panel=node('div');panel.id='account-panel';panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby','tab-overview');aside.append(tabs,panel);layout.append(main,aside);$('content').replaceChildren(layout,footer());renderAccount();
+  const panel=node('div');panel.id='account-panel';panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby','tab-overview');aside.append(tabs,panel);layout.append(main,aside);$('content').replaceChildren(layout);renderAccount();
 }
 function bounds(){const s=review.session;const a=s.start_elapsed_ms??frames[0]?.elapsed_ms??0;const b=Math.max(a+1,s.end_elapsed_ms??frames.at(-1)?.elapsed_ms??a+1);return[a,b];}
 function percent(ms){const[a,b]=bounds();return Math.max(0,Math.min(100,(ms-a)/(b-a)*100));}
@@ -238,7 +251,7 @@ function renderTimeline(){
     b.title=description;b.setAttribute('aria-label',description);segments.append(b);
     if(i<5){const label=node('span',s.label,s.uncertain?'uncertain':'');label.style.setProperty('--segment-color',color);label.title=description;label.prepend(node('i'));labels.append(label);}
   });
-  if(!all.length)labels.append(node('span','Retained samples · no established segments'));
+  if(!all.length)labels.append(node('span','No established segments'));
   const[a,b]=bounds(),ticks=$('time-ticks');ticks.replaceChildren();const origin=Date.parse(review.session.started_at||frames[0]?.received_at||new Date().toISOString())-a;
   for(let i=0;i<6;i++)ticks.append(node('span',new Date(origin+a+(b-a)*i/5).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false})));
   $('seek').min=a;$('seek').max=b;$('seek').disabled=!frames.length;updateTransport();
@@ -277,15 +290,15 @@ function renderAccount(){
   const sections=node('div','','account-sections');
   for(const[key,title,name]of[['objective','Objective','target'],['process','Process','file-text'],['outcome','Observed outcome','check-circle'],['unknowns','Still unknown','help-circle']]){
     const value=a?.[key]||{text:key==='objective'?'Objective was not recorded.':key==='process'?'Generate an overview from this session’s saved observations.':key==='outcome'?'Outcome not established.':'No account has been generated. Unobserved intervals remain unknown.',frame_ids:[]};
-    const card=node('details','',`account-section${key==='unknowns'?' unknown':''}`);card.open=true;const summary=node('summary');summary.append(icon(name),node('h2',title),icon('chevron-down'));card.append(summary,node('p',value.text,'account-copy'));if(value.frame_ids?.length)card.append(citations(value.frame_ids));sections.append(card);
+    const card=node('section','',`account-section${key==='unknowns'?' unknown':''}`);const head=node('div','','account-label');head.append(icon(name),node('h2',title));card.append(head,node('p',value.text,'account-copy'));if(value.frame_ids?.length)card.append(citations(value.frame_ids));sections.append(card);
   }
   root.append(sections);const actions=node('div','','account-actions');
-  if(meta.stale)actions.append(node('p','This account predates the latest evidence.','amber'));
+  if(meta.stale)actions.append(node('p','Predates the latest evidence.','amber'));
   if(meta.error)actions.append(errorBox(meta.error));
   if(meta.sampling_notice)actions.append(node('p',meta.sampling_notice));
-  if(meta.generated_at)actions.append(node('p',`Version ${meta.version} · ${date(meta.generated_at)} · ${meta.model} · AI interpretation`));
-  if(!demo&&meta.generation_allowed){const b=button(meta.state==='pending'?'Generating overview…':a?'Refresh overview':'Generate overview',generateAccount);b.disabled=meta.state==='pending';actions.append(b,node('p','Uses the configured model and may incur API usage.'));
-  }else if(!demo)actions.append(node('p','Saved archive · generation is disabled.'));
+  const bits=[];if(meta.generated_at)bits.push(`v${meta.version} · ${date(meta.generated_at)} · ${meta.model}`);if(!demo&&!meta.generation_allowed)bits.push('Archive · generation disabled');
+  if(bits.length)actions.append(node('p',bits.join(' · ')));
+  if(!demo&&meta.generation_allowed){const b=button(meta.state==='pending'?'Generating…':a?'Refresh overview':'Generate overview',generateAccount);b.disabled=meta.state==='pending';actions.append(b);}
   root.append(actions);
 }
 async function generateAccount(){const version=routeVersion;try{review.account=await api(`/api/session-accounts/${encodeURIComponent(review.session.session_id)}/generate`,{});if(version===routeVersion)renderAccount();}catch(e){toast(e.message);}}
@@ -307,42 +320,43 @@ async function renderAtTime(){
     if(!result.states.length)root.append(empty('Not established at this time','No saved interpretations support this selected time.',true));
     for(const item of result.states){const a=item.latest_interpretation,card=node('article','','state-card');card.append(node('h3',a.subject),node('p',a.value),node('small',`${a.epistemic.replaceAll('_',' ')} · last observed ${precise(a.last_observed_at)}`));if(a.uncertainty)card.append(node('p',a.uncertainty,'uncertainty'));if(item.support_conflict)card.append(node('p','Conflicting interpretations remain unresolved.','uncertainty'));card.append(citations(a.evidence_ids));root.append(card);}
     for(const change of changes.changes.slice(-3)){const card=node('article','','state-card');card.append(node('h3',change.kind.replaceAll('_',' ')),node('p',change.explanation),citations([...(change.before?.evidence_ids||[]),...(change.after?.evidence_ids||[])]));root.append(card);}
-    root.append(node('p','Last observed does not mean currently known.','account-actions'));
+    root.append(node('p','Last observed ≠ currently known.','account-actions'));
   }catch(e){if(version===selectionVersion)root.replaceChildren(errorBox(e.message));}
 }
 
 function renderLive(){
   document.title='Live · FieldNotes';liveRevision='';const layout=node('div','','live-layout'),main=node('section'),viewer=node('div','','live-viewer');
   const heading=node('div','','live-heading'),identity=node('div'),title=node('h1',demo?demoSessions.find(s=>s.session_id==='demo-lounge').title:'Live observation');title.id='live-title';const subtitle=node('p',demo?'Started 10:12 AM · Lounge (North)':'Waiting for a recording session');subtitle.id='live-subtitle';identity.append(title,subtitle);heading.append(identity);
-  const history=link('Open session history',demo?refHash('demo-lounge'):'#/sessions','history-link','book-open');history.id='history-link';history.append(icon('arrow-right'));heading.append(history);viewer.append(heading);
+  const history=link('Open session',demo?refHash('demo-lounge'):'#/sessions','history-link','book-open');history.id='history-link';history.append(icon('arrow-right'));heading.append(history);viewer.append(heading);
   const stage=node('div','','live-stage');stage.id='live-stage';const preview=img(demo?'/static/demo/lounge-seated.png':'/api/preview','Current camera view',false);preview.id='preview';preview.onerror=()=>{preview.hidden=true;if($('video-placeholder')){$('video-placeholder').hidden=false;$('video-placeholder').firstElementChild.textContent='Camera image unavailable.';}};preview.onload=()=>{preview.hidden=false;};stage.append(preview);
   const overlay=node('div','','live-overlay'),badge=node('span','','live-badge');badge.id='live-badge';badge.append(node('i','','status-dot'),node('span',demo?'DEMO LIVE':'WAITING'));const freshness=node('span',demo?'Simulated feed':'Waiting for video');freshness.id='live-freshness';overlay.append(badge,freshness);stage.append(overlay);
-  const placeholder=node('div','','video-placeholder');placeholder.id='video-placeholder';placeholder.hidden=demo;placeholder.append(node('h2','Awaiting your perspective.'),node('p','Publish a camera stream using the address in Connection details below.'));stage.append(placeholder);viewer.append(stage);main.append(viewer,liveJobPanel(),observationSettings(),connectionSettings());
-  const panel=node('aside','','activity-panel');panel.setAttribute('aria-label','Recent live observations');const ah=node('div','','activity-heading');ah.append(node('h2','Live observations'));const count=node('span','0');count.id='activity-count';ah.append(count);panel.append(ah);const entries=node('div');entries.id='activity-entries';panel.append(entries);layout.append(main,panel);$('content').append(layout,footer());
+  const placeholder=node('div','','video-placeholder');placeholder.id='video-placeholder';placeholder.hidden=demo;placeholder.append(node('h2','Waiting for video'),node('p','Publish a camera stream to the address below.'));stage.append(placeholder);viewer.append(stage);
+  const settings=node('div','','live-settings');settings.append(liveJobPanel(),observationSettings(),connectionSettings());main.append(viewer,settings);
+  const panel=node('aside','','activity-panel');panel.setAttribute('aria-label','Recent live observations');const ah=node('div','','activity-heading');ah.append(node('h2','Observations'));const count=node('span','0');count.id='activity-count';ah.append(count);panel.append(ah);const entries=node('div');entries.id='activity-entries';panel.append(entries);layout.append(main,panel);$('content').append(layout);
   if(demo)renderActivity(demoActivity());else{updateLiveStatus();loadActivity();const version=routeVersion;api('/api/config').then(c=>{if(version!==routeVersion)return;$('brief').value=c.brief;$('interval').value=c.interval_seconds;publish=c.publish_url;updateLiveStatus();}).catch(e=>toast(e.message));}
 }
-function disclosure(title,description,name,id){const d=node('details','','settings-panel');d.id=id;const s=node('summary'),labels=node('div');labels.append(node('h2',title),node('p',description));s.append(icon(name),labels,icon('chevron-down'));d.append(s);return d;}
+// One settings card: labelled blocks instead of stacked accordions.
+function block(title,name,id){const d=node('section','','settings-block');d.id=id;const h=node('div','','settings-label');h.append(icon(name),node('h2',title));d.append(h);return d;}
 function observationSettings(){
-  const d=disclosure('Observation brief and cadence',demo?'Objective: monitor lounge usage · cadence: every 20s':'Configure what to observe and how often','file-text','observation-settings'),body=node('div','','settings-content'),form=node('form');form.id='settings';
-  const label=node('label','What should the observer describe?');label.htmlFor='brief';const brief=node('textarea');brief.id='brief';brief.rows=3;brief.maxLength=4000;brief.required=true;brief.value=demo?'Monitor lounge usage. Describe visible activities and preserve uncertainty.':observer?.brief||'';
+  const d=block('Observer','file-text','observation-settings'),body=node('div','','settings-content'),form=node('form');form.id='settings';
+  const label=node('label','Brief');label.htmlFor='brief';const brief=node('textarea');brief.id='brief';brief.rows=3;brief.maxLength=4000;brief.required=true;brief.value=demo?'Monitor lounge usage. Describe visible activities and preserve uncertainty.':observer?.brief||'';
   const row=node('div','','controls-row'),cadence=node('label','Observe every ');cadence.htmlFor='interval';const input=node('input');input.id='interval';input.type='number';input.min=1;input.max=60;input.step='any';input.value=demo?20:observer?.interval_seconds||5;input.required=true;cadence.append(input,document.createTextNode(' seconds'));const pause=button('Pause',async()=>{if(demo){$('observer-status').textContent='Demo observation paused.';return;}try{await api('/api/summaries/pause',{});updateStatus(await api('/api/status'));}catch(e){toast(e.message);}});pause.id='pause-observing';const start=button('Start observing',null,'primary');start.id='start-observing';start.type='submit';row.append(cadence,pause,start);form.append(label,brief,row);form.onsubmit=async e=>{e.preventDefault();if(demo){$('observer-status').textContent=`Demo settings applied · every ${input.value}s. No model calls.`;return;}start.disabled=true;try{await api('/api/summaries/start',{brief:brief.value.trim(),interval_seconds:Number(input.value)});updateStatus(await api('/api/status'));toast('Observation settings applied.');}catch(e){toast(e.message);start.disabled=false;}};
-  const status=node('p',demo?'Demonstration only. Settings do not affect a camera.':'','footnote');status.id='observer-status';status.setAttribute('role','status');body.append(form,status,node('p','Only sampled images are retained. Observation sends images to the configured model; analysis may lag the feed. Flight remains with the operator.','footnote'));d.append(body);return d;
+  const status=node('p',demo?'Demo · settings do not reach a camera.':'','footnote');status.id='observer-status';status.setAttribute('role','status');body.append(form,status);d.append(body);return d;
 }
 function connectionSettings(){
-  const d=disclosure('Connection details','RTMP addresses and diagnostic information hidden','wifi','connection-settings'),body=node('div','','settings-content'),row=node('div','','address-row');const address=node('code',demo?'Demonstration · no RTMP connection':publish||'Loading connection details…');address.id='publish-address';const copy=button('Copy',async()=>{if(demo){toast('The demo has no stream address.');return;}try{await navigator.clipboard.writeText(publish);toast('RTMP address copied.');}catch{toast('Copy unavailable. Select the address and copy it manually.');}});copy.id='copy-address';row.append(address,copy);body.append(node('p','RTMP publish address','muted tiny'),row);const diagnostics=node('div','','diagnostics');diagnostics.id='diagnostics';body.append(diagnostics);d.append(body);return d;
+  const d=block('Stream','wifi','connection-settings'),body=node('div','','settings-content'),row=node('div','','address-row');const address=node('code',demo?'Demo · no RTMP connection':publish||'Loading…');address.id='publish-address';const copy=button('Copy',async()=>{if(demo){toast('The demo has no stream address.');return;}try{await navigator.clipboard.writeText(publish);toast('RTMP address copied.');}catch{toast('Copy unavailable. Select the address and copy it manually.');}});copy.id='copy-address';row.append(address,copy);body.append(row);const details=node('details','','capture-details');const diagnostics=node('div','','diagnostics');diagnostics.id='diagnostics';details.append(node('summary','Diagnostics'),diagnostics);body.append(details);d.append(body);return d;
 }
 function updateLiveStatus(){
   if(route!=='live'||demo||!$('live-stage')||!stream)return;
   const live=stream.state==='live',archive=stream.state==='archive',stale=!live&&stream.latest_frame_age_ms!=null;
   $('live-stage').classList.toggle('stale',stale);$('live-badge').lastElementChild.textContent=archive?'ARCHIVE':stream.source==='replay'?'REPLAY':live?'LIVE':stale?'STALE':'WAITING';
   $('live-freshness').textContent=archive?'Saved original · not live':stream.latest_frame_age_ms==null?'Waiting for video':`Last frame ${(stream.latest_frame_age_ms/1000).toFixed(1)}s ago`;
-  const placeholder=$('video-placeholder');placeholder.hidden=(live||archive)&&!$('preview').hidden;placeholder.firstElementChild.textContent=stale?'Video interrupted.':'Awaiting your perspective.';placeholder.lastElementChild.textContent=stale?'The last frame is stale. Waiting for the stream to return.':'Publish a camera stream using the address in Connection details below.';
+  const placeholder=$('video-placeholder');placeholder.hidden=(live||archive)&&!$('preview').hidden;placeholder.firstElementChild.textContent=stale?'Video interrupted':'Waiting for video';placeholder.lastElementChild.textContent=stale?'Last frame is stale; waiting for the stream to return.':'Publish a camera stream to the address below.';
   $('live-title').textContent=stream.session_name|| (archive?'Saved archive':'Live observation');$('live-subtitle').textContent=archive?'Historical evidence · not a live stream':stream.active_session_id?`${stream.source==='replay'?'Prerecorded replay':'Camera connected'} · ${stream.session_state==='active'?'Recording':'Waiting for video'}`:'No active recording session';
   $('history-link').href=stream.active_session_id?refHash(stream.active_session_id):'#/sessions';$('history-link').hidden=!stream.active_session_id&&!archive;
   $('publish-address').textContent=archive?'Archive mode · RTMP disabled':publish;$('copy-address').disabled=archive||!publish;
   if(observer){$('start-observing').disabled=archive||!observer.available;$('start-observing').textContent=observer.enabled?'Apply settings':'Start observing';$('pause-observing').disabled=archive||!observer.enabled;
     $('observer-status').textContent=observer.model_error||observer.error||observer.memory_error||(archive?'Archive mode · no paid calls':observer.enabled?`${observer.busy?'Analyzing':'Observing'} · every ${observer.interval_seconds}s${observer.degraded_cadence?' · analysis is behind live video':''}`:'Observation paused');
-    $('observation-settings').querySelector('summary p').textContent=`${observer.enabled?'Observing':'Paused'} · cadence: every ${observer.interval_seconds}s`;
   }
   $('diagnostics').textContent=`Source: ${stream.source}\nStream: ${stream.state}\nSession: ${stream.active_session_id||'none'}\nModel: ${observer?.model||'unavailable'}${stream.decoder_error?'\nDecoder: '+stream.decoder_error:''}${stream.interruption_grace_remaining_ms!=null?'\nSession closes after '+Math.ceil(stream.interruption_grace_remaining_ms/1000)+'s without video':''}`;
 }
@@ -357,7 +371,7 @@ async function loadActivity(){
 }
 function renderActivity(items){
   const root=$('activity-entries');if(!root)return;root.replaceChildren();$('activity-count').textContent=items.filter(i=>!i.uncertain).length;
-  if(!items.length){root.append(empty('Ready to observe','Saved observations will appear here once video is connected and observation is running.',true));return;}
+  if(!items.length){root.append(empty('Nothing observed yet','',true));return;}
   for(const item of items){const article=node('article','',`activity-item${item.uncertain?' uncertain':''}`),stamp=node('div','','activity-time');stamp.append(item.uncertain?icon('alert-circle'):node('i','','status-dot active'),node('span',precise(item.time)));if(item.uncertain)stamp.append(node('span','Uncertain','amber'));if(item.mock)stamp.append(node('span','MOCK','amber'));article.append(stamp);const body=node('div','','activity-body');if(item.image){const evidence=link('',refHash(item.session,item.frame),'activity-evidence');evidence.title='Open cited frame';evidence.append(img(item.image,`Evidence at ${precise(item.time)}`));body.append(evidence);}const copy=node('div','','activity-text');copy.append(node('h3',item.title),node('p',item.text));body.append(copy);article.append(body);root.append(article);}
 }
 
@@ -384,49 +398,48 @@ function modal(title){
 }
 function jobForm(job,onSave){
   const form=node('form','','job-form'),nameLabel=node('label','Job name'),name=node('input');name.type='text';name.maxLength=120;name.required=true;name.value=job?.name||'';nameLabel.append(name);
-  const themeLabel=node('label','General theme'),theme=node('textarea');theme.rows=5;theme.maxLength=4000;theme.required=true;theme.value=job?.theme||'';theme.placeholder='What should the observer pay attention to across this job’s observations?';themeLabel.append(theme);
-  const note=node('p','The theme guides new observations alongside their task-specific brief. Existing observations keep their captured context.','muted tiny');
-  const error=node('p','','error-box');error.hidden=true;error.setAttribute('role','alert');const actions=node('div','','job-actions'),save=button(job?'Save changes':'Create job',null,'primary');save.type='submit';actions.append(save);
-  if(job)actions.append(button('Reload latest job',()=>renderJob(job.job_id),'quiet'));
-  form.append(nameLabel,themeLabel,note,error,actions);let saving=false;
-  form.onsubmit=async e=>{e.preventDefault();if(saving)return;const values={name:name.value.trim(),theme:theme.value.trim()};if(!values.name||!values.theme){error.textContent='Enter both a name and a general theme.';error.hidden=false;return;}saving=true;save.disabled=true;name.disabled=true;theme.disabled=true;error.hidden=true;save.textContent='Saving…';try{await onSave(values);}catch(e){error.textContent=e.message;error.hidden=false;}finally{saving=false;save.disabled=false;name.disabled=false;theme.disabled=false;save.textContent=job?'Save changes':'Create job';}};return form;
+  const themeLabel=node('label','Theme'),theme=node('textarea');theme.rows=4;theme.maxLength=4000;theme.required=true;theme.value=job?.theme||'';theme.placeholder='What should the observer pay attention to across this job? Applies to new sessions only.';themeLabel.append(theme);
+  const error=node('p','','error-box');error.hidden=true;error.setAttribute('role','alert');const actions=node('div','','job-actions'),save=button(job?'Save':'Create job',null,'primary');save.type='submit';actions.append(save);
+  if(job)actions.append(button('Cancel',()=>renderJob(job.job_id),'quiet'));
+  form.append(nameLabel,themeLabel,error,actions);let saving=false;
+  form.onsubmit=async e=>{e.preventDefault();if(saving)return;const values={name:name.value.trim(),theme:theme.value.trim()};if(!values.name||!values.theme){error.textContent='Enter both a name and a general theme.';error.hidden=false;return;}saving=true;save.disabled=true;name.disabled=true;theme.disabled=true;error.hidden=true;save.textContent='Saving…';try{await onSave(values);}catch(e){error.textContent=e.message;error.hidden=false;}finally{saving=false;save.disabled=false;name.disabled=false;theme.disabled=false;save.textContent=job?'Save':'Create job';}};return form;
 }
-function newJob(){const dialog=modal('New job');const mode=demo;dialog.append(jobForm(null,async values=>{if(mode!==demo)return;const result=await mutateJob('/api/jobs',values);dialog.close();if(mode!==demo)return;location.hash=jobHash(result.job.job_id);toast('Job created. Select it to use its theme for new observations.');}));dialog.querySelector('input').focus();}
+function newJob(){const dialog=modal('New job');const mode=demo;dialog.append(jobForm(null,async values=>{if(mode!==demo)return;const result=await mutateJob('/api/jobs',values);dialog.close();if(mode!==demo)return;location.hash=jobHash(result.job.job_id);toast('Job created.');}));dialog.querySelector('input').focus();}
 function renderJobs(){
-  document.title='Jobs · FieldNotes';jobsList=[];jobsListCursor=null;const heading=node('div','','jobs-heading'),copy=node('div');copy.append(node('h1','A purpose for every pass.'),node('p','Group observations around the work you want to understand.','muted'));heading.append(copy,button('New job',newJob,'primary','plus'));
+  document.title='Jobs · FieldNotes';jobsList=[];jobsListCursor=null;const heading=pageHead('Jobs','',null,button('New job',newJob,'primary','plus'));
   const grid=node('div','','jobs-grid');grid.id='jobs-grid';const more=node('div');more.id='jobs-more';$('content').replaceChildren(heading,grid,more,footer());loadJobs();
 }
 async function loadJobs(more=false){
   const version=routeVersion,generation=++jobsVersion;const grid=$('jobs-grid');if(!grid)return;if(!more)grid.replaceChildren(node('div','Loading jobs…','loading'));
   try{const page=await jobsRequest('/api/jobs?limit=50'+(more&&jobsListCursor?'&cursor='+encodeURIComponent(jobsListCursor):''));if(version!==routeVersion||generation!==jobsVersion)return;jobsList=more?[...jobsList,...page.jobs]:page.jobs;jobsListCursor=page.next_cursor;grid.replaceChildren();
-    for(const j of jobsList){const card=link('',jobHash(j.job_id),'job-card');const top=node('div','','job-card-top');top.append(icon('folder'),node('span',j.selected?'Next observation':`${j.observation_count} observation${j.observation_count===1?'':'s'}`,j.selected?'lime tiny':'muted tiny'));card.append(top,node('h2',j.name),node('p',j.theme,'job-theme-preview'));const foot=node('div','','job-card-bottom');foot.append(node('span',`${j.observation_count} observations · revision ${j.revision}`),icon('arrow-up-right'));card.append(foot);grid.append(card);}
-    if(!jobsList.length)grid.append(empty('Bring observations together.','Create a job with a general theme, then select it for future observations.'));
+    for(const j of jobsList){const wrap=node('div','','job-card');const card=link('',jobHash(j.job_id),'job-card-link');card.append(node('h2',j.name),node('p',j.theme,'job-theme-preview'));const foot=node('div','','job-card-bottom');foot.append(node('span',`${j.observation_count} observation${j.observation_count===1?'':'s'}${j.selected?' · next session':''}`,j.selected?'lime':''));const stats=link('',statisticsHash(j.job_id),'job-card-stats','bar-chart-2');stats.setAttribute('aria-label',`${j.name} statistics`);stats.title='Statistics';foot.append(stats);wrap.append(card,foot);grid.append(wrap);}
+    if(!jobsList.length)grid.append(empty('No jobs yet','Create a job with a theme, then select it for the next session.'));
     $('jobs-more').replaceChildren();if(jobsListCursor)$('jobs-more').append(button('More jobs',()=>loadJobs(true),'load-more'));
   }catch(e){if(version===routeVersion)grid.replaceChildren(errorBox(e.message),button('Try again',()=>loadJobs()));}
 }
 async function renderJob(id){
   const version=routeVersion,generation=++jobsVersion;$('content').replaceChildren(node('div','Loading job…','loading'));
   try{const [job,context]=await Promise.all([jobsRequest('/api/jobs/'+encodeURIComponent(id)),fetchJobContext()]);if(version!==routeVersion||generation!==jobsVersion)return;
-    document.title=`${job.name} · FieldNotes`;const head=node('div','','jobs-heading'),copy=node('div');copy.append(link('All jobs','#/jobs','back-link','arrow-left'),node('h1',job.name),node('p',`${job.observation_count} observations · revision ${job.revision}`,'muted'));
-    const actions=node('div','','job-actions');const use=button(context.selected_job_id===id?'Selected for next observation':'Use for next observation',async()=>{use.disabled=true;try{await mutateJob('/api/jobs/selection',{job_id:id,expected_selection_revision:context.selection_revision});if(version===routeVersion)await renderJob(id);toast('Selected for the next observation. Current capture is unchanged.');}catch(e){toast(e.message);use.disabled=false;}},'primary');use.disabled=!context.selection_allowed||context.selected_job_id===id;actions.append(use,button('Add untracked observations',()=>assignUntrackedDialog(job),'','plus'));head.append(copy,actions);
-    const brief=node('section','','job-brief');brief.append(node('p','GENERAL THEME','eyebrow'),node('p',job.theme,'job-theme-full'));const edit=node('details','','job-edit');edit.append(node('summary','Edit name and theme'),jobForm(job,async values=>{await mutateJob('/api/jobs/'+encodeURIComponent(id),{...values,expected_revision:job.revision});if(version===routeVersion){await renderJob(id);toast('Job updated. New sessions will use the new theme.');}}));brief.append(edit);
-    if(context.current_session){const current=context.current_session;brief.append(node('p',`Current observation: ${current.job?.name||'Untracked'}. Selecting this job applies only to the next session.`,'capture-note'));}
-    if(!context.selection_allowed)brief.append(node('p','Saved archive · jobs can be organized, but capture selection is disabled.','muted tiny'));
-    const observations=node('section','','session-group');observations.append(node('h2','Observations','group-title'));const grid=node('div','','session-grid');grid.id='job-observations';const more=node('div');more.id='job-observations-more';observations.append(grid,more);$('content').replaceChildren(head,brief,observations,footer());
+    document.title=`${job.name} · FieldNotes`;const selected=context.selected_job_id===id;
+    const use=button(selected?'Next session':'Use for next session',async()=>{use.disabled=true;try{await mutateJob('/api/jobs/selection',{job_id:id,expected_selection_revision:context.selection_revision});if(version===routeVersion)await renderJob(id);toast('Selected for the next session.');}catch(e){toast(e.message);use.disabled=false;}},selected?'':'primary',selected?'check':'');use.disabled=!context.selection_allowed||selected;
+    const meta=[`${job.observation_count} observation${job.observation_count===1?'':'s'}`,`rev ${job.revision}`];if(context.current_session)meta.push(`current session: ${context.current_session.job?.name||'Untracked'}`);if(!context.selection_allowed)meta.push('archive · selection disabled');
+    const head=pageHead(job.name,meta.join(' · '),{href:'#/jobs',label:'All jobs'},use,button('Add observations',()=>assignUntrackedDialog(job),'','plus'),link('Statistics',statisticsHash(id),'button-link','bar-chart-2'));
+    const brief=node('section','','job-brief');const themeRow=node('div','','job-theme-row');const editToggle=button('Edit',()=>{brief.classList.toggle('editing');},'quiet tiny','edit-2');themeRow.append(node('p',job.theme,'job-theme-full'),editToggle);brief.append(themeRow,jobForm(job,async values=>{await mutateJob('/api/jobs/'+encodeURIComponent(id),{...values,expected_revision:job.revision});if(version===routeVersion){await renderJob(id);toast('Job updated.');}}));
+    const observations=node('section','','session-group');observations.append(node('h2','Observations','group-title'));const grid=node('div','','session-grid');grid.id='job-observations';const more=node('div');more.id='job-observations-more';observations.append(grid,more);$('content').replaceChildren(head,brief,observations);
     await loadJobObservations(id,grid,more,version);
   }catch(e){if(version===routeVersion)$('content').replaceChildren(link('All jobs','#/jobs','back-link','arrow-left'),empty('Could not load this job',e.message),button('Try again',()=>renderJob(id)));}
 }
 async function loadJobObservations(id,grid,more,version,cursor=null){
   if(cursor===null)grid.replaceChildren(node('div','Loading observations…','loading'));
   try{const page=demo?{sessions:demoSessions.map(demoDecorate).filter(s=>s.job_id===id),next_cursor:null}:await api('/api/library?job_id='+encodeURIComponent(id)+'&limit=30'+(cursor!==null?'&cursor='+cursor:''));if(version!==routeVersion||!grid.isConnected)return;
-    if(cursor===null)grid.replaceChildren();page.sessions.forEach(s=>grid.append(sessionCard(s)));if(cursor===null&&!page.sessions.length)grid.append(empty('No observations yet.','Select this job for future sessions or add Untracked observations.',true));more.replaceChildren();if(page.next_cursor!==null)more.append(button('More observations',()=>loadJobObservations(id,grid,more,version,page.next_cursor),'load-more'));
+    if(cursor===null)grid.replaceChildren();page.sessions.forEach(s=>grid.append(sessionCard(s)));if(cursor===null&&!page.sessions.length)grid.append(empty('No observations yet','Use this job for the next session, or add untracked observations.',true));more.replaceChildren();if(page.next_cursor!==null)more.append(button('More observations',()=>loadJobObservations(id,grid,more,version,page.next_cursor),'load-more'));
   }catch(e){if(version===routeVersion&&grid.isConnected){grid.append(errorBox(e.message));more.replaceChildren(button('Try again',()=>loadJobObservations(id,grid,more,version,cursor)));}}
 }
 function assignUntrackedDialog(job){
-  const dialog=modal('Add untracked observations'),note=node('p','Assign up to 100 observations. Their original prompts, summaries, and captured themes stay unchanged.','muted');dialog.append(note);
+  const dialog=modal('Add observations'),note=node('p','Up to 100 untracked observations. Captured context stays unchanged.','muted');dialog.append(note);
   const list=node('div','','assignment-list'),error=errorBox(''),actions=node('div','','job-actions');error.hidden=true;error.setAttribute('role','alert');const selectedIds=new Set();let cursor=null,busy=false;const mode=demo,version=routeVersion;
   const save=button('Add observations',async()=>{if(busy||!selectedIds.size)return;busy=true;save.disabled=true;more.disabled=true;list.querySelectorAll('input').forEach(i=>i.disabled=true);error.hidden=true;
-    try{await mutateJob(`/api/jobs/${encodeURIComponent(job.job_id)}/observations`,{session_ids:[...selectedIds].sort()});dialog.close();if(mode===demo&&version===routeVersion&&route==='job')renderJob(job.job_id);toast('Observations added. Captured context is unchanged.');}catch(e){error.textContent=e.message;error.hidden=false;}finally{busy=false;save.disabled=!selectedIds.size;more.disabled=false;list.querySelectorAll('input').forEach(i=>i.disabled=false);}},'primary');save.disabled=true;
+    try{await mutateJob(`/api/jobs/${encodeURIComponent(job.job_id)}/observations`,{session_ids:[...selectedIds].sort()});dialog.close();if(mode===demo&&version===routeVersion&&route==='job')renderJob(job.job_id);toast('Observations added.');}catch(e){error.textContent=e.message;error.hidden=false;}finally{busy=false;save.disabled=!selectedIds.size;more.disabled=false;list.querySelectorAll('input').forEach(i=>i.disabled=false);}},'primary');save.disabled=true;
   const more=button('More untracked observations',()=>load(true),'quiet');more.hidden=true;actions.append(save,button('Cancel',()=>dialog.close(),'quiet'));dialog.append(list,more,error,actions);
   async function load(next=false){more.disabled=true;if(!next)list.replaceChildren(node('p','Loading observations…','muted'));try{const page=demo?{sessions:demoSessions.map(demoDecorate).filter(s=>!s.job_id),next_cursor:null}:await api('/api/sessions?untracked_only=true&limit=100'+(next&&cursor?'&cursor='+encodeURIComponent(cursor):''));if(mode!==demo||!dialog.isConnected)return;if(!next)list.replaceChildren();cursor=page.next_cursor;
       page.sessions.forEach(s=>{const label=node('label','','assignment-row'),check=node('input');check.type='checkbox';check.value=s.session_id;check.checked=selectedIds.has(s.session_id);check.onchange=()=>{if(check.checked&&selectedIds.size>=100){check.checked=false;error.textContent='Choose at most 100 observations per batch.';error.hidden=false;return;}if(check.checked)selectedIds.add(s.session_id);else selectedIds.delete(s.session_id);save.disabled=!selectedIds.size;save.textContent=selectedIds.size?`Add ${selectedIds.size} observation${selectedIds.size===1?'':'s'}`:'Add observations';};const text=node('div');text.append(node('strong',s.title||s.display_name||s.name||'Untitled observation'),node('small',`${date(s.started_at||s.created_at)} · ${time(s.started_at)}${s.state==='active'?' · Recording':''}`));label.append(check,text);list.append(label);});if(!next&&!page.sessions.length)list.append(node('p','No untracked observations are available.','muted'));more.hidden=!cursor;
@@ -434,20 +447,20 @@ function assignUntrackedDialog(job){
   load();
 }
 function sessionJobPanel(session){
-  const box=node('section','','session-job-panel');box.id='session-job-panel';const row=node('div','','session-job-line');row.append(icon('folder'),session.job?link(session.job.name,jobHash(session.job_id)):node('span','Untracked','muted'));
-  if(!session.job_id)row.append(button('Add to job',()=>assignSessionDialog(session),'quiet','plus'));box.append(row);
+  const box=node('div','','session-job-panel');box.id='session-job-panel';const row=node('div','','session-job-line');row.append(icon('folder'),session.job?link(session.job.name,jobHash(session.job_id)):node('span','Untracked','muted'));
+  if(session.job_assignment?.kind==='assigned')row.append(node('span','added after capture','muted tiny'));
+  if(!session.job_id)row.append(button('Add to job',()=>assignSessionDialog(session),'quiet tiny','plus'));box.append(row);
   const capture=session.job_context;
-  if(session.job_assignment?.kind==='assigned')box.append(node('p','Added after capture started. This job’s theme was not used for these observations.','capture-note'));
-  if(capture){const details=node('details','','capture-details');details.append(node('summary',`Captured theme · ${capture.name} · revision ${capture.revision}`),node('p',capture.theme));box.append(details);}
+  if(capture){const details=node('details','','capture-details');details.append(node('summary',`Captured theme · ${capture.name} · rev ${capture.revision}`),node('p',capture.theme));box.append(details);}
   return box;
 }
 async function assignSessionDialog(session){
-  const dialog=modal('Add observation to a job');dialog.append(node('p','This changes organization only. The original capture context and evidence stay unchanged.','muted'));const form=node('form','','job-form'),label=node('label','Job'),select=node('select');label.append(select);const error=errorBox('');error.hidden=true;error.setAttribute('role','alert');const save=button('Add to job',null,'primary');save.type='submit';save.disabled=true;form.append(label,error,save);dialog.append(form);const mode=demo,version=routeVersion;
+  const dialog=modal('Add to a job');dialog.append(node('p','Organization only — captured context and evidence stay unchanged.','muted'));const form=node('form','','job-form'),label=node('label','Job'),select=node('select');label.append(select);const error=errorBox('');error.hidden=true;error.setAttribute('role','alert');const save=button('Add to job',null,'primary');save.type='submit';save.disabled=true;form.append(label,error,save);dialog.append(form);const mode=demo,version=routeVersion;
   try{const jobs=await allJobs();if(!dialog.isConnected||mode!==demo)return;select.append(...jobs.map(j=>new Option(j.name,j.job_id)));save.disabled=!jobs.length;if(!jobs.length){error.textContent='Create a job from the Jobs page first.';error.hidden=false;}}catch(e){error.textContent=e.message;error.hidden=false;}
   form.onsubmit=async e=>{e.preventDefault();if(!select.value)return;save.disabled=true;select.disabled=true;error.hidden=true;try{const result=await mutateJob(`/api/jobs/${encodeURIComponent(select.value)}/observations`,{session_ids:[session.session_id]});dialog.close();if(version===routeVersion&&review){review.session={...review.session,job_id:result.job.job_id,job:result.job,job_assignment:{kind:'assigned'}};$('session-job-panel')?.replaceWith(sessionJobPanel(review.session));}toast('Observation added to job.');}catch(e){error.textContent=e.message;error.hidden=false;save.disabled=false;select.disabled=false;}};
 }
 function liveJobPanel(){
-  const panel=disclosure('Job context','Choose the theme for the next observation','folder','live-job-settings');panel.open=true;const body=node('div','','settings-content'),label=node('label','Next observation'),select=node('select');select.id='live-job-picker';select.disabled=true;label.htmlFor=select.id;select.append(new Option('Loading jobs…',''));const current=node('div');current.id='live-job-current';const error=errorBox('');error.id='live-job-error';error.hidden=true;error.setAttribute('role','alert');body.append(label,select,current,error,node('p','Switching jobs never ends or changes the current session. The next session uses this selection and the job’s latest theme.','footnote'));panel.append(body);
+  const panel=block('Job','folder','live-job-settings');const body=node('div','','settings-content'),label=node('label','Next session'),select=node('select');select.id='live-job-picker';select.disabled=true;label.htmlFor=select.id;select.append(new Option('Loading jobs…',''));const current=node('div');current.id='live-job-current';const error=errorBox('');error.id='live-job-error';error.hidden=true;error.setAttribute('role','alert');body.append(label,select,current,error);panel.append(body);
   const version=routeVersion;queueMicrotask(async()=>{try{const [jobs]=await Promise.all([allJobs(),fetchJobContext()]);if(version!==routeVersion||!select.isConnected)return;select.replaceChildren(new Option('Untracked',''),...jobs.map(j=>new Option(j.name,j.job_id)));select.disabled=!currentJobContext?.selection_allowed;select.value=currentJobContext?.selected_job_id||'';updateJobContextView();}catch(e){if(version===routeVersion){error.textContent=e.message;error.hidden=false;}}});
   select.onfocus=async()=>{try{const jobs=await allJobs();if(version!==routeVersion)return;const value=select.value;select.replaceChildren(new Option('Untracked',''),...jobs.map(j=>new Option(j.name,j.job_id)));select.value=value;}catch(e){error.textContent=e.message;error.hidden=false;}};
   select.onchange=async()=>{if(!currentJobContext)return;const chosen=select.value||null,revision=currentJobContext.selection_revision;select.disabled=true;select.dataset.saving='true';error.hidden=true;try{await mutateJob('/api/jobs/selection',{job_id:chosen,expected_selection_revision:revision});await fetchJobContext();toast('Job selection applies to the next observation.');}catch(e){error.textContent=e.message;error.hidden=false;try{await fetchJobContext();}catch{/* Keep the last-known selection visible. */}}finally{delete select.dataset.saving;if(version===routeVersion){select.value=currentJobContext?.selected_job_id||'';select.disabled=!currentJobContext?.selection_allowed;}}};return panel;
@@ -455,14 +468,12 @@ function liveJobPanel(){
 function updateJobContextView(){
   const root=$('live-job-current'),picker=$('live-job-picker');if(!root||!currentJobContext)return;const context=currentJobContext,session=context.current_session,captured=session?.job_context,next=context.selected_job;
   if(picker&&!picker.dataset.saving&&document.activeElement!==picker){if(next&&![...picker.options].some(o=>o.value===next.job_id))picker.append(new Option(next.name,next.job_id));picker.value=context.selected_job_id||'';picker.disabled=!context.selection_allowed;}
-  root.replaceChildren();root.append(node('p',session?`Current observation: ${session.job?.name||'Untracked'}`:'No current observation.','job-current-title'));
-  if(captured){root.append(node('p',`Captured theme · ${captured.name} · revision ${captured.revision}`,'muted tiny'),node('p',captured.theme,'job-current-theme'));}else if(session)root.append(node('p','No job theme was supplied when this observation started.','muted tiny'));
-  if(session?.job_assignment?.kind==='assigned')root.append(node('p','Assigned after capture started; membership does not change the observer’s captured theme.','capture-note'));
+  root.replaceChildren();
+  if(session){const bits=[`Current session: ${session.job?.name||'Untracked'}`];if(captured)bits.push(`rev ${captured.revision}`);if(session.job_assignment?.kind==='assigned')bits.push('added after capture');root.append(node('p',bits.join(' · '),'job-current-title'));}
   const differs=!!session&&((captured?.job_id||null)!==(next?.job_id||null)||(captured&&next&&captured.revision!==next.revision));
-  if(differs)root.append(node('p',`Next observation: ${next?.name||'Untracked'}${next?' · revision '+next.revision:''}`,'job-next-note'));
-  if(next)root.append(node('p',`Next theme: ${next.theme}`,'muted tiny'));
-  if(!context.selection_allowed)root.append(node('p','Saved archive · capture selection is disabled.','muted tiny'));
-  const summary=$('live-job-settings')?.querySelector('summary p');if(summary)summary.textContent=`Next: ${next?.name||'Untracked'}${differs?' · current observation unchanged':''}`;
+  if(differs)root.append(node('p','Applies to the next session only.','job-next-note'));
+  const theme=captured?.theme||next?.theme;if(theme){const details=node('details','','capture-details');details.append(node('summary',captured?'Captured theme':'Theme'),node('p',theme));root.append(details);}
+  if(!context.selection_allowed)root.append(node('p','Archive · selection disabled.','muted tiny'));
 }
 
 setupConnection();renderRoute();
